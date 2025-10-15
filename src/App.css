@@ -1,0 +1,132 @@
+:root {
+  --primary-color: #646cff;
+  --primary-hover: #535bf2;
+  --background: #242424;
+  --surface: #1a1a1a;
+  --text: rgba(255, 255, 255, 0.87);
+  --text-secondary: rgba(255, 255, 255, 0.6);
+  --border: rgba(255, 255, 255, 0.1);
+}
+
+.app {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 2rem;
+  text-align: center;
+}
+
+.app-header {
+  margin-bottom: 3rem;
+}
+
+.app-header h1 {
+  font-size: 3.2em;
+  line-height: 1.1;
+  margin-bottom: 0.5rem;
+}
+
+.app-header p {
+  color: var(--text-secondary);
+  font-size: 1.2em;
+}
+
+.app-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2rem;
+  margin-bottom: 3rem;
+}
+
+.card {
+  padding: 2em;
+  background-color: var(--surface);
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  text-align: left;
+}
+
+.card h2 {
+  margin-top: 0;
+  color: var(--primary-color);
+}
+
+.card h3 {
+  margin-top: 1.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.counter {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  margin: 2rem 0;
+}
+
+.counter button {
+  width: 50px;
+  height: 50px;
+  font-size: 1.5em;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background-color: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.counter button:hover {
+  background-color: var(--primary-color);
+  border-color: var(--primary-color);
+}
+
+.count {
+  font-size: 2em;
+  font-weight: bold;
+  min-width: 60px;
+}
+
+.features ul {
+  list-style: none;
+  padding: 0;
+}
+
+.features li {
+  padding: 0.5rem 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.features li:last-child {
+  border-bottom: none;
+}
+
+code {
+  background-color: rgba(255, 255, 255, 0.1);
+  padding: 0.2em 0.4em;
+  border-radius: 4px;
+  font-family: monospace;
+}
+
+ol {
+  text-align: left;
+  line-height: 1.8;
+}
+
+.app-footer {
+  color: var(--text-secondary);
+  font-size: 0.9em;
+}
+
+@media (max-width: 768px) {
+  .app {
+    padding: 1rem;
+  }
+
+  .app-header h1 {
+    font-size: 2em;
+  }
+
+  .card {
+    padding: 1.5em;
+  }
+}
