@@ -1,0 +1,41 @@
+name = "mvp-template"
+main = "src/worker/index.ts"
+compatibility_date = "2024-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Account ID - update with your Cloudflare account ID
+# account_id = "your-account-id-here"
+
+# Workers configuration
+workers_dev = true
+
+# Build configuration
+[build]
+command = "npm run build"
+
+# Environment variables
+[env.production]
+name = "mvp-template-production"
+
+[env.staging]
+name = "mvp-template-staging"
+
+# KV Namespaces (example)
+# [[kv_namespaces]]
+# binding = "MY_KV_NAMESPACE"
+# id = "your-kv-namespace-id"
+
+# R2 Buckets (example)
+# [[r2_buckets]]
+# binding = "MY_BUCKET"
+# bucket_name = "my-bucket"
+
+# Durable Objects (example)
+# [[durable_objects.bindings]]
+# name = "MY_DURABLE_OBJECT"
+# class_name = "MyDurableObject"
+# script_name = "my-worker"
+
+# Analytics Engine (example)
+# [analytics_engine_datasets]
+# binding = "MY_ANALYTICS"
