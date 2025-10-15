@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2020"],
+    "module": "ESNext",
+    "target": "ES2020",
+    "jsx": "preserve",
+    "types": ["@cloudflare/workers-types"]
+  },
+  "include": ["src/worker/**/*"],
+  "exclude": ["node_modules"]
+}
