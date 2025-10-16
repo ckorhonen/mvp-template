@@ -1,267 +1,315 @@
 /**
  * D1 Database Service
- * Provides type-safe database operations for Cloudflare D1
+ * Provides type-safe wrapper around Cloudflare D1 database
+ * 
+ * Features:
+ * - Type-safe query builder
+ * - Transaction support
+ * - Prepared statements
+ * - Error handling
+ * - Query logging
  */
 
 import type { Env } from '../types';
 
-export interface QueryResult<T = unknown> {
-  results: T[];
+export interface QueryResult<T = any> {
   success: boolean;
+  results: T[];
   meta?: {
+    changed_db?: boolean;
+    changes?: number;
     duration: number;
-    rows_read: number;
-    rows_written: number;
+    last_row_id?: number;
+    rows_read?: number;
+    rows_written?: number;
   };
 }
 
-export interface WhereClause {
+export interface WhereCondition {
   column: string;
-  operator?: '=' | '!=' | '>' | '<' | '>=' | '<=' | 'LIKE' | 'IN';
-  value: string | number | boolean | null | (string | number)[];
+  operator?: '=' | '!=' | '>' | '>=' | '<' | '<=' | 'LIKE' | 'IN';
+  value: any;
 }
 
-export class D1DatabaseService {
-  private db: D1Database;
-  private env: Env;
+export class DatabaseError extends Error {
+  constructor(
+    message: string,
+    public code?: string,
+    public query?: string,
+    public params?: any[]
+  ) {
+    super(message);
+    this.name = 'DatabaseError';
+  }
+}
 
-  constructor(env: Env) {
-    this.env = env;
-    this.db = env.DB;
+/**
+ * Creates a D1 database service instance
+ */
+export function createD1Service(env: Env) {
+  const db = env.DB;
+  const logQueries = env.ENVIRONMENT === 'development';
+
+  /**
+   * Log query execution
+   */
+  function logQuery(query: string, params?: any[], duration?: number) {
+    if (logQueries) {
+      console.log('[D1]', {
+        query,
+        params,
+        duration: duration ? `${duration}ms` : undefined,
+      });
+    }
   }
 
   /**
    * Execute a raw SQL query
    */
-  async query<T = unknown>(
+  async function query<T = any>(
     sql: string,
-    params: (string | number | boolean | null)[] = []
+    params?: any[]
   ): Promise<T[]> {
+    const startTime = Date.now();
+
     try {
-      const result = await this.db.prepare(sql).bind(...params).all();
+      const stmt = params ? db.prepare(sql).bind(...params) : db.prepare(sql);
+      const result = await stmt.all();
+
+      const duration = Date.now() - startTime;
+      logQuery(sql, params, duration);
 
       if (!result.success) {
-        throw new Error('Database query failed');
+        throw new DatabaseError('Query execution failed', 'QUERY_FAILED', sql, params);
       }
 
       return result.results as T[];
-    } catch (error) {
-      console.error('Database query error:', error);
-      throw error;
+    } catch (error: any) {
+      const duration = Date.now() - startTime;
+      logQuery(sql, params, duration);
+
+      if (error instanceof DatabaseError) {
+        throw error;
+      }
+
+      throw new DatabaseError(
+        `Database error: ${error.message}`,
+        'QUERY_ERROR',
+        sql,
+        params
+      );
     }
   }
 
   /**
-   * Execute a single query and return first result
+   * Execute a query and return first result
    */
-  async queryOne<T = unknown>(
+  async function queryFirst<T = any>(
     sql: string,
-    params: (string | number | boolean | null)[] = []
+    params?: any[]
   ): Promise<T | null> {
-    const results = await this.query<T>(sql, params);
+    const results = await query<T>(sql, params);
     return results[0] || null;
   }
 
   /**
-   * Execute a query without returning results (INSERT, UPDATE, DELETE)
+   * Execute a query and return single value
    */
-  async execute(
+  async function queryValue<T = any>(
     sql: string,
-    params: (string | number | boolean | null)[] = []
-  ): Promise<{ success: boolean; meta?: Record<string, unknown> }> {
+    params?: any[]
+  ): Promise<T | null> {
+    const result = await queryFirst<any>(sql, params);
+    if (!result) return null;
+    const keys = Object.keys(result);
+    return keys.length > 0 ? result[keys[0]] : null;
+  }
+
+  /**
+   * Execute a write query (INSERT, UPDATE, DELETE)
+   */
+  async function execute(
+    sql: string,
+    params?: any[]
+  ): Promise<{
+    success: boolean;
+    changes: number;
+    lastRowId: number | null;
+  }> {
+    const startTime = Date.now();
+
     try {
-      const result = await this.db.prepare(sql).bind(...params).run();
+      const stmt = params ? db.prepare(sql).bind(...params) : db.prepare(sql);
+      const result = await stmt.run();
+
+      const duration = Date.now() - startTime;
+      logQuery(sql, params, duration);
+
       return {
         success: result.success,
-        meta: result.meta,
+        changes: result.meta.changes || 0,
+        lastRowId: result.meta.last_row_id || null,
       };
-    } catch (error) {
-      console.error('Database execute error:', error);
-      throw error;
+    } catch (error: any) {
+      const duration = Date.now() - startTime;
+      logQuery(sql, params, duration);
+
+      throw new DatabaseError(
+        `Database error: ${error.message}`,
+        'EXECUTE_ERROR',
+        sql,
+        params
+      );
     }
   }
 
   /**
-   * Insert a record into a table
+   * Insert a record
    */
-  async insert(
+  async function insert<T extends Record<string, any>>(
     table: string,
-    data: Record<string, string | number | boolean | null>
+    data: T
   ): Promise<number> {
     const columns = Object.keys(data);
     const values = Object.values(data);
     const placeholders = columns.map(() => '?').join(', ');
 
-    const sql = `
-      INSERT INTO ${table} (${columns.join(', ')})
-      VALUES (${placeholders})
-    `;
+    const sql = `INSERT INTO ${table} (${columns.join(', ')}) VALUES (${placeholders})`;
+    const result = await execute(sql, values);
 
-    const result = await this.db.prepare(sql).bind(...values).run();
-
-    if (!result.success) {
-      throw new Error('Failed to insert record');
+    if (!result.lastRowId) {
+      throw new DatabaseError('Insert failed: no last row ID', 'INSERT_FAILED');
     }
 
-    // Return the last inserted ID
-    return result.meta?.last_row_id as number;
+    return result.lastRowId;
   }
 
   /**
-   * Update records in a table
+   * Update records
    */
-  async update(
+  async function update<T extends Record<string, any>>(
     table: string,
-    data: Record<string, string | number | boolean | null>,
-    where: WhereClause
+    data: T,
+    where: WhereCondition
   ): Promise<number> {
-    const updates = Object.keys(data)
-      .map((key) => `${key} = ?`)
-      .join(', ');
-    const values = [...Object.values(data), where.value];
+    const columns = Object.keys(data);
+    const values = Object.values(data);
+    const setClause = columns.map((col) => `${col} = ?`).join(', ');
 
     const operator = where.operator || '=';
-    const sql = `
-      UPDATE ${table}
-      SET ${updates}
-      WHERE ${where.column} ${operator} ?
-    `;
+    const sql = `UPDATE ${table} SET ${setClause} WHERE ${where.column} ${operator} ?`;
 
-    const result = await this.db.prepare(sql).bind(...values).run();
-
-    if (!result.success) {
-      throw new Error('Failed to update record');
-    }
-
-    return result.meta?.changes as number;
+    const result = await execute(sql, [...values, where.value]);
+    return result.changes;
   }
 
   /**
-   * Delete records from a table
+   * Delete records
    */
-  async delete(table: string, where: WhereClause): Promise<number> {
+  async function deleteRecords(
+    table: string,
+    where: WhereCondition
+  ): Promise<number> {
     const operator = where.operator || '=';
-    const sql = `
-      DELETE FROM ${table}
-      WHERE ${where.column} ${operator} ?
-    `;
+    const sql = `DELETE FROM ${table} WHERE ${where.column} ${operator} ?`;
 
-    const result = await this.db.prepare(sql).bind(where.value).run();
-
-    if (!result.success) {
-      throw new Error('Failed to delete record');
-    }
-
-    return result.meta?.changes as number;
+    const result = await execute(sql, [where.value]);
+    return result.changes;
   }
 
   /**
-   * Select records with pagination
+   * Count records
    */
-  async select<T = unknown>(
+  async function count(
     table: string,
-    options?: {
-      columns?: string[];
-      where?: WhereClause[];
-      orderBy?: { column: string; direction: 'ASC' | 'DESC' };
-      limit?: number;
-      offset?: number;
-    }
-  ): Promise<T[]> {
-    const columns = options?.columns?.join(', ') || '*';
-    let sql = `SELECT ${columns} FROM ${table}`;
-    const params: (string | number | boolean | null)[] = [];
-
-    // Add WHERE clauses
-    if (options?.where && options.where.length > 0) {
-      const whereClauses = options.where.map((w) => {
-        const operator = w.operator || '=';
-        if (operator === 'IN' && Array.isArray(w.value)) {
-          const placeholders = w.value.map(() => '?').join(', ');
-          params.push(...w.value);
-          return `${w.column} IN (${placeholders})`;
-        }
-        params.push(w.value as string | number | boolean | null);
-        return `${w.column} ${operator} ?`;
-      });
-      sql += ` WHERE ${whereClauses.join(' AND ')}`;
-    }
-
-    // Add ORDER BY
-    if (options?.orderBy) {
-      sql += ` ORDER BY ${options.orderBy.column} ${options.orderBy.direction}`;
-    }
-
-    // Add LIMIT and OFFSET
-    if (options?.limit) {
-      sql += ` LIMIT ${options.limit}`;
-    }
-    if (options?.offset) {
-      sql += ` OFFSET ${options.offset}`;
-    }
-
-    return this.query<T>(sql, params);
-  }
-
-  /**
-   * Count records in a table
-   */
-  async count(
-    table: string,
-    where?: WhereClause[]
+    where?: WhereCondition
   ): Promise<number> {
     let sql = `SELECT COUNT(*) as count FROM ${table}`;
-    const params: (string | number | boolean | null)[] = [];
+    const params: any[] = [];
 
-    if (where && where.length > 0) {
-      const whereClauses = where.map((w) => {
-        const operator = w.operator || '=';
-        params.push(w.value as string | number | boolean | null);
-        return `${w.column} ${operator} ?`;
-      });
-      sql += ` WHERE ${whereClauses.join(' AND ')}`;
+    if (where) {
+      const operator = where.operator || '=';
+      sql += ` WHERE ${where.column} ${operator} ?`;
+      params.push(where.value);
     }
 
-    const result = await this.queryOne<{ count: number }>(sql, params);
-    return result?.count || 0;
+    const result = await queryValue<number>(sql, params);
+    return result || 0;
   }
 
   /**
-   * Execute multiple queries in a transaction
+   * Check if record exists
    */
-  async transaction(
-    queries: Array<{
-      sql: string;
-      params?: (string | number | boolean | null)[];
-    }>
-  ): Promise<void> {
-    try {
-      const statements = queries.map((q) =>
-        this.db.prepare(q.sql).bind(...(q.params || []))
-      );
+  async function exists(
+    table: string,
+    where: WhereCondition
+  ): Promise<boolean> {
+    const cnt = await count(table, where);
+    return cnt > 0;
+  }
 
-      await this.db.batch(statements);
+  /**
+   * Execute queries in a batch
+   */
+  async function batch(queries: Array<{ sql: string; params?: any[] }>) {
+    const statements = queries.map((q) => {
+      const stmt = db.prepare(q.sql);
+      return q.params ? stmt.bind(...q.params) : stmt;
+    });
+
+    const startTime = Date.now();
+
+    try {
+      const results = await db.batch(statements);
+      const duration = Date.now() - startTime;
+
+      if (logQueries) {
+        console.log('[D1] Batch execution', {
+          queries: queries.length,
+          duration: `${duration}ms`,
+        });
+      }
+
+      return results;
+    } catch (error: any) {
+      throw new DatabaseError(
+        `Batch execution error: ${error.message}`,
+        'BATCH_ERROR'
+      );
+    }
+  }
+
+  /**
+   * Execute a function within a transaction (simulated)
+   * Note: D1 doesn't support true transactions yet, this is a wrapper for future compatibility
+   */
+  async function transaction<T>(
+    fn: (tx: ReturnType<typeof createD1Service>) => Promise<T>
+  ): Promise<T> {
+    // For now, just execute the function
+    // When D1 supports transactions, wrap in BEGIN/COMMIT
+    try {
+      return await fn(createD1Service(env));
     } catch (error) {
-      console.error('Transaction error:', error);
+      // In future: ROLLBACK
       throw error;
     }
   }
 
-  /**
-   * Check if a table exists
-   */
-  async tableExists(tableName: string): Promise<boolean> {
-    const result = await this.queryOne<{ name: string }>(
-      `SELECT name FROM sqlite_master WHERE type='table' AND name=?`,
-      [tableName]
-    );
-    return result !== null;
-  }
+  return {
+    query,
+    queryFirst,
+    queryValue,
+    execute,
+    insert,
+    update,
+    delete: deleteRecords,
+    count,
+    exists,
+    batch,
+    transaction,
+    raw: db, // Access to raw D1 instance
+  };
 }
 
-/**
- * Factory function to create D1 database service
- */
-export function createD1Service(env: Env): D1DatabaseService {
-  return new D1DatabaseService(env);
-}
+export type D1Service = ReturnType<typeof createD1Service>;

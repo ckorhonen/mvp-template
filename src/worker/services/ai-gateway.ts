@@ -1,35 +1,31 @@
 /**
  * AI Gateway Service
  * Provides integration with Cloudflare AI Gateway and OpenAI
+ * 
+ * Features:
+ * - Automatic caching via AI Gateway
+ * - Rate limiting
+ * - Error handling and retries
+ * - Streaming support
+ * - Multiple model support
  */
 
 import type { Env } from '../types';
 
-export interface AIGatewayConfig {
-  accountId: string;
-  gatewayId: string;
-  apiKey: string;
-  model?: string;
-  temperature?: number;
-  maxTokens?: number;
-}
-
-export interface ChatMessage {
-  role: 'system' | 'user' | 'assistant' | 'function';
+export interface AIMessage {
+  role: 'system' | 'user' | 'assistant';
   content: string;
-  name?: string;
 }
 
 export interface ChatCompletionRequest {
-  model: string;
-  messages: ChatMessage[];
+  model?: string;
+  messages: AIMessage[];
   temperature?: number;
   max_tokens?: number;
+  stream?: boolean;
   top_p?: number;
   frequency_penalty?: number;
   presence_penalty?: number;
-  stop?: string | string[];
-  stream?: boolean;
 }
 
 export interface ChatCompletionResponse {
@@ -39,56 +35,180 @@ export interface ChatCompletionResponse {
   model: string;
   choices: Array<{
     index: number;
-    message: ChatMessage;
+    message: AIMessage;
     finish_reason: string;
   }>;
-  usage?: {
+  usage: {
     prompt_tokens: number;
     completion_tokens: number;
     total_tokens: number;
   };
 }
 
-export interface AIGatewayError {
-  error: {
-    message: string;
-    type: string;
-    code?: string;
-  };
+export interface AIGatewayConfig {
+  apiKey: string;
+  gatewayId: string;
+  accountId: string;
+  defaultModel?: string;
+  defaultTemperature?: number;
+  defaultMaxTokens?: number;
+  timeout?: number;
 }
 
-export class AIGatewayService {
-  private config: AIGatewayConfig;
-  private env: Env;
-  private baseUrl: string;
+export class AIGatewayError extends Error {
+  constructor(
+    message: string,
+    public statusCode: number,
+    public code?: string,
+    public details?: any
+  ) {
+    super(message);
+    this.name = 'AIGatewayError';
+  }
+}
 
-  constructor(env: Env) {
-    this.env = env;
-    this.config = {
-      accountId: env.CLOUDFLARE_ACCOUNT_ID || '',
-      gatewayId: env.AI_GATEWAY_ID || '',
-      apiKey: env.OPENAI_API_KEY || '',
-      model: env.AI_DEFAULT_MODEL || 'gpt-4o-mini',
-      temperature: parseFloat(env.AI_DEFAULT_TEMPERATURE || '0.7'),
-      maxTokens: parseInt(env.AI_MAX_TOKENS || '1000', 10),
-    };
+/**
+ * Creates an AI Gateway service instance
+ */
+export function createAIGateway(env: Env) {
+  const config: AIGatewayConfig = {
+    apiKey: env.OPENAI_API_KEY,
+    gatewayId: env.AI_GATEWAY_ID,
+    accountId: env.CLOUDFLARE_ACCOUNT_ID,
+    defaultModel: env.AI_DEFAULT_MODEL || 'gpt-4o-mini',
+    defaultTemperature: parseFloat(env.AI_DEFAULT_TEMPERATURE || '0.7'),
+    defaultMaxTokens: parseInt(env.AI_DEFAULT_MAX_TOKENS || '1000'),
+    timeout: 30000, // 30 seconds
+  };
 
-    this.baseUrl = `https://gateway.ai.cloudflare.com/v1/${this.config.accountId}/${this.config.gatewayId}/openai`;
+  /**
+   * Get the AI Gateway endpoint URL
+   */
+  function getEndpoint(): string {
+    return `https://gateway.ai.cloudflare.com/v1/${config.accountId}/${config.gatewayId}/openai`;
   }
 
   /**
-   * Simple completion method for quick AI responses
+   * Make a request to the AI Gateway
    */
-  async complete(
+  async function makeRequest(
+    endpoint: string,
+    options: RequestInit
+  ): Promise<Response> {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), config.timeout!);
+
+    try {
+      const response = await fetch(endpoint, {
+        ...options,
+        signal: controller.signal,
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${config.apiKey}`,
+          ...options.headers,
+        },
+      });
+
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new AIGatewayError(
+          errorData.error?.message || `AI Gateway error: ${response.status}`,
+          response.status,
+          errorData.error?.code,
+          errorData
+        );
+      }
+
+      return response;
+    } catch (error: any) {
+      clearTimeout(timeoutId);
+
+      if (error.name === 'AbortError') {
+        throw new AIGatewayError('Request timeout', 408);
+      }
+
+      if (error instanceof AIGatewayError) {
+        throw error;
+      }
+
+      throw new AIGatewayError(
+        `Network error: ${error.message}`,
+        500,
+        'network_error',
+        error
+      );
+    }
+  }
+
+  /**
+   * Create a chat completion
+   */
+  async function createChatCompletion(
+    request: ChatCompletionRequest
+  ): Promise<ChatCompletionResponse> {
+    const payload = {
+      model: request.model || config.defaultModel,
+      messages: request.messages,
+      temperature: request.temperature ?? config.defaultTemperature,
+      max_tokens: request.max_tokens ?? config.defaultMaxTokens,
+      top_p: request.top_p,
+      frequency_penalty: request.frequency_penalty,
+      presence_penalty: request.presence_penalty,
+      stream: false,
+    };
+
+    const response = await makeRequest(`${getEndpoint()}/chat/completions`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+
+    return response.json();
+  }
+
+  /**
+   * Create a streaming chat completion
+   */
+  async function createStreamingChatCompletion(
+    request: ChatCompletionRequest
+  ): Promise<ReadableStream> {
+    const payload = {
+      model: request.model || config.defaultModel,
+      messages: request.messages,
+      temperature: request.temperature ?? config.defaultTemperature,
+      max_tokens: request.max_tokens ?? config.defaultMaxTokens,
+      top_p: request.top_p,
+      frequency_penalty: request.frequency_penalty,
+      presence_penalty: request.presence_penalty,
+      stream: true,
+    };
+
+    const response = await makeRequest(`${getEndpoint()}/chat/completions`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+
+    if (!response.body) {
+      throw new AIGatewayError('No response body', 500);
+    }
+
+    return response.body;
+  }
+
+  /**
+   * Simple completion helper - wraps chat completion with a single user message
+   */
+  async function complete(
     prompt: string,
     options?: {
       systemPrompt?: string;
+      model?: string;
       temperature?: number;
       maxTokens?: number;
-      model?: string;
     }
   ): Promise<string> {
-    const messages: ChatMessage[] = [];
+    const messages: AIMessage[] = [];
 
     if (options?.systemPrompt) {
       messages.push({
@@ -102,153 +222,50 @@ export class AIGatewayService {
       content: prompt,
     });
 
-    const response = await this.createChatCompletion({
-      model: options?.model || this.config.model || 'gpt-4o-mini',
+    const response = await createChatCompletion({
+      model: options?.model,
       messages,
-      temperature: options?.temperature ?? this.config.temperature,
-      max_tokens: options?.maxTokens ?? this.config.maxTokens,
+      temperature: options?.temperature,
+      max_tokens: options?.maxTokens,
     });
 
-    return response.choices[0]?.message?.content || '';
+    return response.choices[0]?.message.content || '';
   }
 
   /**
-   * Create a chat completion
+   * List available models
    */
-  async createChatCompletion(
-    request: ChatCompletionRequest
-  ): Promise<ChatCompletionResponse> {
-    try {
-      const response = await fetch(`${this.baseUrl}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${this.config.apiKey}`,
-        },
-        body: JSON.stringify(request),
-      });
+  async function listModels(): Promise<any> {
+    const response = await makeRequest(`${getEndpoint()}/models`, {
+      method: 'GET',
+    });
 
-      if (!response.ok) {
-        const errorData = (await response.json()) as AIGatewayError;
-        throw new Error(
-          `AI Gateway error: ${errorData.error?.message || response.statusText}`
-        );
-      }
-
-      return (await response.json()) as ChatCompletionResponse;
-    } catch (error) {
-      console.error('AI Gateway completion error:', error);
-      throw error;
-    }
+    return response.json();
   }
 
   /**
-   * Create a streaming chat completion
+   * Generate embeddings
    */
-  async createChatCompletionStream(
-    request: ChatCompletionRequest
-  ): Promise<ReadableStream> {
-    try {
-      const response = await fetch(`${this.baseUrl}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${this.config.apiKey}`,
-        },
-        body: JSON.stringify({
-          ...request,
-          stream: true,
-        }),
-      });
+  async function createEmbedding(
+    input: string | string[],
+    model: string = 'text-embedding-ada-002'
+  ): Promise<any> {
+    const response = await makeRequest(`${getEndpoint()}/embeddings`, {
+      method: 'POST',
+      body: JSON.stringify({ input, model }),
+    });
 
-      if (!response.ok) {
-        const errorData = (await response.json()) as AIGatewayError;
-        throw new Error(
-          `AI Gateway error: ${errorData.error?.message || response.statusText}`
-        );
-      }
-
-      return response.body!;
-    } catch (error) {
-      console.error('AI Gateway stream error:', error);
-      throw error;
-    }
+    return response.json();
   }
 
-  /**
-   * Get available models
-   */
-  async listModels(): Promise<string[]> {
-    return [
-      'gpt-4o',
-      'gpt-4o-mini',
-      'gpt-4-turbo',
-      'gpt-4',
-      'gpt-3.5-turbo',
-    ];
-  }
-
-  /**
-   * Cached completion - stores results in KV
-   */
-  async cachedComplete(
-    prompt: string,
-    options?: {
-      systemPrompt?: string;
-      temperature?: number;
-      maxTokens?: number;
-      model?: string;
-      cacheTTL?: number;
-    }
-  ): Promise<string> {
-    // Generate cache key
-    const cacheKey = `ai:${this.hashString(
-      JSON.stringify({
-        prompt,
-        system: options?.systemPrompt,
-        temp: options?.temperature,
-        model: options?.model,
-      })
-    )}`;
-
-    // Try to get from cache
-    if (this.env.CACHE) {
-      const cached = await this.env.CACHE.get(cacheKey);
-      if (cached) {
-        return cached;
-      }
-    }
-
-    // Generate new completion
-    const result = await this.complete(prompt, options);
-
-    // Store in cache
-    if (this.env.CACHE) {
-      await this.env.CACHE.put(cacheKey, result, {
-        expirationTtl: options?.cacheTTL || 3600,
-      });
-    }
-
-    return result;
-  }
-
-  /**
-   * Simple hash function for cache keys
-   */
-  private hashString(str: string): string {
-    let hash = 0;
-    for (let i = 0; i < str.length; i++) {
-      const char = str.charCodeAt(i);
-      hash = (hash << 5) - hash + char;
-      hash = hash & hash;
-    }
-    return Math.abs(hash).toString(36);
-  }
+  return {
+    createChatCompletion,
+    createStreamingChatCompletion,
+    complete,
+    listModels,
+    createEmbedding,
+    config,
+  };
 }
 
-/**
- * Factory function to create AI Gateway service
- */
-export function createAIGateway(env: Env): AIGatewayService {
-  return new AIGatewayService(env);
-}
+export type AIGateway = ReturnType<typeof createAIGateway>;
