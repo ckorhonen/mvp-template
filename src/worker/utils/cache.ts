@@ -1,127 +1,216 @@
 /**
- * Cache Utilities
- * 
- * Helpers for working with KV cache, including TTL management and key generation.
+ * Cache Utility Functions
+ * Helper functions for KV caching patterns
  */
 
-import type { Env } from '../types';
+import { Env } from '../types';
 
 export interface CacheOptions {
   ttl?: number; // Time to live in seconds
-  metadata?: Record<string, unknown>;
+  namespace?: 'CACHE' | 'SESSIONS' | 'CONFIG';
 }
 
 export class CacheManager {
-  constructor(private kv: KVNamespace, private keyPrefix: string = 'cache:') {}
+  private env: Env;
 
-  /**
-   * Generate a cache key with prefix
-   */
-  private getKey(key: string): string {
-    return `${this.keyPrefix}${key}`;
+  constructor(env: Env) {
+    this.env = env;
   }
 
   /**
    * Get a value from cache
    */
-  async get<T>(key: string): Promise<T | null> {
-    const value = await this.kv.get(this.getKey(key), 'json');
+  async get<T = unknown>(
+    key: string,
+    options?: CacheOptions
+  ): Promise<T | null> {
+    const namespace = this.getNamespace(options?.namespace);
+    const value = await namespace.get(key, { type: 'json' });
     return value as T | null;
   }
 
   /**
    * Set a value in cache
    */
-  async set(key: string, value: unknown, options: CacheOptions = {}): Promise<void> {
-    const { ttl = 3600, metadata } = options;
-    await this.kv.put(
-      this.getKey(key),
-      JSON.stringify(value),
-      {
-        expirationTtl: ttl,
-        metadata: metadata || {},
-      }
-    );
+  async set<T = unknown>(
+    key: string,
+    value: T,
+    options?: CacheOptions
+  ): Promise<void> {
+    const namespace = this.getNamespace(options?.namespace);
+    const kvOptions: KVNamespacePutOptions = {};
+
+    if (options?.ttl) {
+      kvOptions.expirationTtl = options.ttl;
+    }
+
+    await namespace.put(key, JSON.stringify(value), kvOptions);
   }
 
   /**
    * Delete a value from cache
    */
-  async delete(key: string): Promise<void> {
-    await this.kv.delete(this.getKey(key));
+  async delete(key: string, options?: CacheOptions): Promise<void> {
+    const namespace = this.getNamespace(options?.namespace);
+    await namespace.delete(key);
   }
 
   /**
-   * Check if a key exists in cache
+   * Get or set pattern - get from cache or compute and cache
    */
-  async has(key: string): Promise<boolean> {
-    const value = await this.kv.get(this.getKey(key));
-    return value !== null;
-  }
-
-  /**
-   * Get or set pattern - fetch from cache or compute and cache
-   */
-  async getOrSet<T>(
+  async getOrSet<T = unknown>(
     key: string,
-    fn: () => Promise<T>,
-    options: CacheOptions = {}
+    factory: () => Promise<T>,
+    options?: CacheOptions
   ): Promise<T> {
-    const cached = await this.get<T>(key);
+    // Try to get from cache
+    const cached = await this.get<T>(key, options);
     if (cached !== null) {
       return cached;
     }
 
-    const value = await fn();
+    // Compute value
+    const value = await factory();
+
+    // Cache the value
     await this.set(key, value, options);
+
     return value;
   }
 
   /**
-   * Invalidate cache by pattern (list and delete)
+   * Check if a key exists
    */
-  async invalidatePattern(pattern: string): Promise<number> {
-    const keys = await this.kv.list({ prefix: this.getKey(pattern) });
+  async exists(key: string, options?: CacheOptions): Promise<boolean> {
+    const value = await this.get(key, options);
+    return value !== null;
+  }
+
+  /**
+   * Increment a counter
+   */
+  async increment(key: string, amount = 1, options?: CacheOptions): Promise<number> {
+    const current = (await this.get<number>(key, options)) || 0;
+    const newValue = current + amount;
+    await this.set(key, newValue, options);
+    return newValue;
+  }
+
+  /**
+   * Decrement a counter
+   */
+  async decrement(key: string, amount = 1, options?: CacheOptions): Promise<number> {
+    return this.increment(key, -amount, options);
+  }
+
+  /**
+   * Get multiple values at once
+   */
+  async getMany<T = unknown>(
+    keys: string[],
+    options?: CacheOptions
+  ): Promise<Map<string, T | null>> {
+    const results = new Map<string, T | null>();
+
+    await Promise.all(
+      keys.map(async (key) => {
+        const value = await this.get<T>(key, options);
+        results.set(key, value);
+      })
+    );
+
+    return results;
+  }
+
+  /**
+   * Set multiple values at once
+   */
+  async setMany<T = unknown>(
+    entries: Map<string, T>,
+    options?: CacheOptions
+  ): Promise<void> {
+    await Promise.all(
+      Array.from(entries.entries()).map(([key, value]) =>
+        this.set(key, value, options)
+      )
+    );
+  }
+
+  /**
+   * List keys with optional prefix
+   */
+  async listKeys(
+    prefix = '',
+    limit = 100,
+    options?: CacheOptions
+  ): Promise<{ keys: string[]; hasMore: boolean; cursor?: string }> {
+    const namespace = this.getNamespace(options?.namespace);
+    const result = await namespace.list({ prefix, limit });
+
+    return {
+      keys: result.keys.map((k) => k.name),
+      hasMore: !result.list_complete,
+      cursor: result.cursor,
+    };
+  }
+
+  /**
+   * Clear all keys with a prefix
+   */
+  async clearPrefix(prefix: string, options?: CacheOptions): Promise<number> {
+    const namespace = this.getNamespace(options?.namespace);
     let deleted = 0;
-    
-    for (const key of keys.keys) {
-      await this.kv.delete(key.name);
-      deleted++;
-    }
-    
+    let cursor: string | undefined;
+
+    do {
+      const result = await namespace.list({ prefix, limit: 1000, cursor });
+
+      await Promise.all(
+        result.keys.map(async (key) => {
+          await namespace.delete(key.name);
+          deleted++;
+        })
+      );
+
+      cursor = result.cursor;
+    } while (cursor);
+
     return deleted;
   }
+
+  /**
+   * Get the appropriate KV namespace
+   */
+  private getNamespace(namespace?: 'CACHE' | 'SESSIONS' | 'CONFIG'): KVNamespace {
+    switch (namespace) {
+      case 'SESSIONS':
+        return this.env.SESSIONS;
+      case 'CONFIG':
+        return this.env.CONFIG;
+      case 'CACHE':
+      default:
+        return this.env.CACHE;
+    }
+  }
 }
 
 /**
- * Create a cache manager from environment
+ * Factory function to create cache manager
  */
 export function createCacheManager(env: Env): CacheManager {
-  return new CacheManager(env.CACHE);
+  return new CacheManager(env);
 }
 
 /**
- * Generate a cache key from request
+ * Generate a cache key from components
  */
-export function getCacheKeyFromRequest(request: Request): string {
-  const url = new URL(request.url);
-  const method = request.method;
-  const path = url.pathname + url.search;
-  return `req:${method}:${path}`;
+export function cacheKey(...parts: (string | number)[]): string {
+  return parts.join(':');
 }
 
 /**
- * Check if response is cacheable
+ * Parse a cache key into components
  */
-export function isCacheable(response: Response): boolean {
-  // Only cache successful GET requests
-  if (response.status !== 200) return false;
-  
-  // Check cache-control header
-  const cacheControl = response.headers.get('cache-control');
-  if (cacheControl?.includes('no-cache') || cacheControl?.includes('no-store')) {
-    return false;
-  }
-  
-  return true;
+export function parseCacheKey(key: string): string[] {
+  return key.split(':');
 }

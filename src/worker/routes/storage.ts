@@ -3,12 +3,12 @@
  * Handles KV and R2 storage operations
  */
 
-import type { Env } from '../types';
-import { jsonResponse, errorResponse } from '../utils/response';
+import { Env } from '../types';
+import { successResponse, errorResponse } from '../utils/response';
+import { validateRequest } from '../utils/validation';
 
 /**
- * GET /api/cache/:key
- * Get a value from KV cache
+ * GET /api/cache/:key - Get a value from KV cache
  */
 export async function getCacheValue(
   request: Request,
@@ -16,23 +16,13 @@ export async function getCacheValue(
   key: string
 ): Promise<Response> {
   try {
-    if (!env.CACHE) {
-      return errorResponse('Cache not configured', 500);
-    }
-
-    const value = await env.CACHE.get(key);
+    const value = await env.CACHE.get(key, { type: 'json' });
 
     if (value === null) {
       return errorResponse('Key not found', 404);
     }
 
-    return jsonResponse({
-      success: true,
-      data: {
-        key,
-        value: JSON.parse(value),
-      },
-    });
+    return successResponse({ key, value });
   } catch (error) {
     console.error('Get cache value error:', error);
     return errorResponse(
@@ -43,8 +33,7 @@ export async function getCacheValue(
 }
 
 /**
- * PUT /api/cache/:key
- * Set a value in KV cache
+ * PUT /api/cache/:key - Set a value in KV cache
  */
 export async function setCacheValue(
   request: Request,
@@ -52,34 +41,30 @@ export async function setCacheValue(
   key: string
 ): Promise<Response> {
   try {
-    if (!env.CACHE) {
-      return errorResponse('Cache not configured', 500);
+    const body = await request.json();
+    const validation = validateRequest(body, {
+      value: { type: ['string', 'number', 'boolean', 'object'], required: true },
+      ttl: { type: 'number', required: false, min: 60 },
+    });
+
+    if (!validation.valid) {
+      return errorResponse(validation.errors.join(', '), 400);
     }
 
-    const body = await request.json() as {
-      value: unknown;
-      ttl?: number;
-    };
-
-    if (body.value === undefined) {
-      return errorResponse('Value is required', 400);
-    }
+    const { value, ttl } = body;
 
     const options: KVNamespacePutOptions = {};
-    if (body.ttl) {
-      options.expirationTtl = body.ttl;
+    if (ttl) {
+      options.expirationTtl = ttl;
     }
 
-    await env.CACHE.put(key, JSON.stringify(body.value), options);
+    await env.CACHE.put(key, JSON.stringify(value), options);
 
-    return jsonResponse(
-      {
-        success: true,
-        message: 'Value cached successfully',
-        data: { key },
-      },
-      201
-    );
+    return successResponse({
+      message: 'Value cached successfully',
+      key,
+      ttl: ttl || null,
+    });
   } catch (error) {
     console.error('Set cache value error:', error);
     return errorResponse(
@@ -90,8 +75,7 @@ export async function setCacheValue(
 }
 
 /**
- * DELETE /api/cache/:key
- * Delete a value from KV cache
+ * DELETE /api/cache/:key - Delete a value from KV cache
  */
 export async function deleteCacheValue(
   request: Request,
@@ -99,15 +83,11 @@ export async function deleteCacheValue(
   key: string
 ): Promise<Response> {
   try {
-    if (!env.CACHE) {
-      return errorResponse('Cache not configured', 500);
-    }
-
     await env.CACHE.delete(key);
 
-    return jsonResponse({
-      success: true,
+    return successResponse({
       message: 'Value deleted successfully',
+      key,
     });
   } catch (error) {
     console.error('Delete cache value error:', error);
@@ -119,71 +99,73 @@ export async function deleteCacheValue(
 }
 
 /**
- * POST /api/uploads
- * Upload a file to R2
+ * GET /api/cache - List cache keys
+ */
+export async function listCacheKeys(
+  request: Request,
+  env: Env
+): Promise<Response> {
+  try {
+    const url = new URL(request.url);
+    const prefix = url.searchParams.get('prefix') || '';
+    const limit = parseInt(url.searchParams.get('limit') || '100');
+
+    const list = await env.CACHE.list({ prefix, limit });
+
+    return successResponse({
+      keys: list.keys,
+      list_complete: list.list_complete,
+      cursor: list.cursor,
+    });
+  } catch (error) {
+    console.error('List cache keys error:', error);
+    return errorResponse(
+      error instanceof Error ? error.message : 'Failed to list cache keys',
+      500
+    );
+  }
+}
+
+/**
+ * POST /api/uploads - Upload a file to R2
  */
 export async function uploadFile(
   request: Request,
   env: Env
 ): Promise<Response> {
   try {
-    if (!env.UPLOADS) {
-      return errorResponse('Uploads bucket not configured', 500);
-    }
-
     const contentType = request.headers.get('content-type') || '';
 
-    // Handle multipart form data
-    if (contentType.includes('multipart/form-data')) {
-      const formData = await request.formData();
-      const file = formData.get('file') as File;
-
-      if (!file) {
-        return errorResponse('No file provided', 400);
-      }
-
-      const key = `uploads/${Date.now()}-${file.name}`;
-      const arrayBuffer = await file.arrayBuffer();
-
-      await env.UPLOADS.put(key, arrayBuffer, {
-        httpMetadata: {
-          contentType: file.type,
-        },
-      });
-
-      return jsonResponse(
-        {
-          success: true,
-          data: {
-            key,
-            size: file.size,
-            contentType: file.type,
-            url: `/api/uploads/${encodeURIComponent(key)}`,
-          },
-        },
-        201
-      );
+    if (!contentType.includes('multipart/form-data')) {
+      return errorResponse('Content-Type must be multipart/form-data', 400);
     }
 
-    // Handle direct binary upload
-    const key = `uploads/${Date.now()}-file`;
-    const body = await request.arrayBuffer();
+    const formData = await request.formData();
+    const file = formData.get('file') as File;
 
-    await env.UPLOADS.put(key, body, {
+    if (!file) {
+      return errorResponse('No file provided', 400);
+    }
+
+    // Generate unique key
+    const timestamp = Date.now();
+    const randomId = Math.random().toString(36).substring(7);
+    const key = `uploads/${timestamp}-${randomId}-${file.name}`;
+
+    // Upload to R2
+    await env.UPLOADS.put(key, file.stream(), {
       httpMetadata: {
-        contentType: contentType || 'application/octet-stream',
+        contentType: file.type,
       },
     });
 
-    return jsonResponse(
+    return successResponse(
       {
-        success: true,
-        data: {
-          key,
-          size: body.byteLength,
-          contentType: contentType || 'application/octet-stream',
-          url: `/api/uploads/${encodeURIComponent(key)}`,
-        },
+        message: 'File uploaded successfully',
+        key,
+        name: file.name,
+        size: file.size,
+        type: file.type,
       },
       201
     );
@@ -197,8 +179,7 @@ export async function uploadFile(
 }
 
 /**
- * GET /api/uploads/:key
- * Download a file from R2
+ * GET /api/uploads/:key - Download a file from R2
  */
 export async function downloadFile(
   request: Request,
@@ -206,11 +187,10 @@ export async function downloadFile(
   key: string
 ): Promise<Response> {
   try {
-    if (!env.UPLOADS) {
-      return errorResponse('Uploads bucket not configured', 500);
-    }
+    // Decode the key (it may be URL encoded)
+    const decodedKey = decodeURIComponent(key);
 
-    const object = await env.UPLOADS.get(key);
+    const object = await env.UPLOADS.get(decodedKey);
 
     if (!object) {
       return errorResponse('File not found', 404);
@@ -231,8 +211,7 @@ export async function downloadFile(
 }
 
 /**
- * DELETE /api/uploads/:key
- * Delete a file from R2
+ * DELETE /api/uploads/:key - Delete a file from R2
  */
 export async function deleteFile(
   request: Request,
@@ -240,15 +219,12 @@ export async function deleteFile(
   key: string
 ): Promise<Response> {
   try {
-    if (!env.UPLOADS) {
-      return errorResponse('Uploads bucket not configured', 500);
-    }
+    const decodedKey = decodeURIComponent(key);
+    await env.UPLOADS.delete(decodedKey);
 
-    await env.UPLOADS.delete(key);
-
-    return jsonResponse({
-      success: true,
+    return successResponse({
       message: 'File deleted successfully',
+      key: decodedKey,
     });
   } catch (error) {
     console.error('Delete file error:', error);
@@ -260,42 +236,30 @@ export async function deleteFile(
 }
 
 /**
- * GET /api/uploads
- * List files in R2 bucket
+ * GET /api/uploads - List uploaded files
  */
 export async function listFiles(
   request: Request,
   env: Env
 ): Promise<Response> {
   try {
-    if (!env.UPLOADS) {
-      return errorResponse('Uploads bucket not configured', 500);
-    }
-
     const url = new URL(request.url);
     const prefix = url.searchParams.get('prefix') || '';
-    const limit = parseInt(url.searchParams.get('limit') || '100', 10);
-    const cursor = url.searchParams.get('cursor') || undefined;
+    const limit = parseInt(url.searchParams.get('limit') || '100');
 
-    const listed = await env.UPLOADS.list({
-      prefix,
-      limit,
-      cursor,
-    });
+    const list = await env.UPLOADS.list({ prefix, limit });
 
-    return jsonResponse({
-      success: true,
-      data: {
-        objects: listed.objects.map((obj) => ({
-          key: obj.key,
-          size: obj.size,
-          uploaded: obj.uploaded,
-          httpEtag: obj.httpEtag,
-          url: `/api/uploads/${encodeURIComponent(obj.key)}`,
-        })),
-        truncated: listed.truncated,
-        cursor: listed.cursor,
-      },
+    const files = list.objects.map((obj) => ({
+      key: obj.key,
+      size: obj.size,
+      uploaded: obj.uploaded,
+      httpEtag: obj.httpEtag,
+    }));
+
+    return successResponse({
+      files,
+      truncated: list.truncated,
+      cursor: list.truncated ? list.cursor : null,
     });
   } catch (error) {
     console.error('List files error:', error);
