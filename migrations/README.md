@@ -1,101 +1,141 @@
 # Database Migrations
 
-This directory contains SQL migration files for the D1 database.
+This directory contains D1 database migrations for the MVP template.
+
+## Migration Files
+
+- `0001_initial_schema.sql` - Initial database schema with core tables
+- `0002_sample_data.sql` - Sample data for development and testing
 
 ## Running Migrations
 
-### Local Development
+### Development/Preview
 
 ```bash
-# Apply migrations to local D1 database
-wrangler d1 execute mvp-database --local --file=./migrations/0001_initial_schema.sql
+# Create the database (first time only)
+wrangler d1 create mvp-database
+
+# Run initial schema
+wrangler d1 execute DB --file=migrations/0001_initial_schema.sql
+
+# Add sample data (optional)
+wrangler d1 execute DB --file=migrations/0002_sample_data.sql
+```
+
+### Staging
+
+```bash
+wrangler d1 execute DB --env=staging --file=migrations/0001_initial_schema.sql
 ```
 
 ### Production
 
 ```bash
-# Apply migrations to production D1 database
-wrangler d1 execute mvp-database --file=./migrations/0001_initial_schema.sql
+wrangler d1 execute DB --env=production --file=migrations/0001_initial_schema.sql
 ```
 
-### Preview/Staging
+## Database Schema
 
-```bash
-# Apply migrations to preview D1 database
-wrangler d1 execute mvp-database --file=./migrations/0001_initial_schema.sql --preview
-```
+### Tables
 
-## Migration Naming Convention
+#### users
+Stores user accounts and profiles.
 
-Migrations should be named with a sequential number prefix:
+- `id` - Primary key
+- `email` - User email (unique)
+- `name` - User's display name
+- `avatar_url` - Profile picture URL
+- `created_at` - Account creation timestamp
+- `updated_at` - Last update timestamp
+- `deleted_at` - Soft delete timestamp
 
-- `0001_initial_schema.sql`
-- `0002_add_user_profiles.sql`
-- `0003_add_posts_table.sql`
+#### sessions
+Manages user sessions.
 
-## Creating a New Migration
+- `id` - Session ID (primary key)
+- `user_id` - Foreign key to users
+- `expires_at` - Session expiration timestamp
+- `data` - JSON session data
+- `created_at` - Session creation timestamp
 
-1. Create a new SQL file with the next sequential number
-2. Add your SQL statements (CREATE TABLE, ALTER TABLE, etc.)
-3. Test locally first
-4. Apply to staging/preview
-5. Apply to production
+#### api_keys
+API key management for programmatic access.
+
+- `id` - Primary key
+- `user_id` - Foreign key to users
+- `key_hash` - Hashed API key (unique)
+- `name` - Descriptive name for the key
+- `scopes` - JSON array of permission scopes
+- `last_used_at` - Last usage timestamp
+- `created_at` - Key creation timestamp
+- `expires_at` - Key expiration timestamp
+- `revoked_at` - Key revocation timestamp
+
+#### posts
+Example content/posts table.
+
+- `id` - Primary key
+- `user_id` - Foreign key to users
+- `title` - Post title
+- `content` - Post content
+- `slug` - URL-friendly identifier (unique)
+- `published` - Publication status
+- `published_at` - Publication timestamp
+- `created_at` - Creation timestamp
+- `updated_at` - Last update timestamp
+
+#### audit_logs
+Tracks important actions for security and compliance.
+
+- `id` - Primary key
+- `user_id` - Foreign key to users (nullable)
+- `action` - Action performed
+- `resource_type` - Type of resource affected
+- `resource_id` - ID of the resource
+- `details` - JSON object with additional details
+- `ip_address` - Client IP address
+- `user_agent` - Client user agent
+- `created_at` - Action timestamp
+
+#### settings
+Application configuration and settings.
+
+- `id` - Primary key
+- `key` - Setting key (unique)
+- `value` - Setting value
+- `description` - Setting description
+- `created_at` - Creation timestamp
+- `updated_at` - Last update timestamp
 
 ## Best Practices
 
-1. **Always test migrations locally first**
-2. **Use transactions when possible**
-3. **Create indexes for frequently queried columns**
-4. **Include rollback statements in comments**
-5. **Document schema changes in commit messages**
+1. **Version Control**: Always commit migration files to version control
+2. **Naming**: Use sequential numbering: `0001_`, `0002_`, etc.
+3. **Testing**: Test migrations on development/staging before production
+4. **Backups**: Always backup production data before running migrations
+5. **Rollback Plan**: Have a rollback strategy for each migration
+6. **Documentation**: Document any complex migrations or data transformations
 
-## Example Migration
+## Creating New Migrations
 
-```sql
--- Add user profile fields
-ALTER TABLE users ADD COLUMN avatar_url TEXT;
-ALTER TABLE users ADD COLUMN bio TEXT;
+1. Create a new file with the next sequential number
+2. Write your SQL statements
+3. Test locally with `wrangler d1 execute`
+4. Commit to version control
+5. Deploy to environments in order: dev → staging → production
 
--- Create index for better query performance
-CREATE INDEX idx_users_avatar ON users(avatar_url);
-
--- Rollback (manual):
--- ALTER TABLE users DROP COLUMN avatar_url;
--- ALTER TABLE users DROP COLUMN bio;
--- DROP INDEX idx_users_avatar;
-```
-
-## Checking Migration Status
+## Useful Commands
 
 ```bash
-# List all tables in your D1 database
-wrangler d1 execute mvp-database --command "SELECT name FROM sqlite_master WHERE type='table';"
+# List all databases
+wrangler d1 list
 
-# Check a specific table structure
-wrangler d1 execute mvp-database --command "PRAGMA table_info(users);"
+# Query the database
+wrangler d1 execute DB --command="SELECT * FROM users"
+
+# Export data
+wrangler d1 execute DB --command="SELECT * FROM users" --json > users_backup.json
+
+# Get database info
+wrangler d1 info DB
 ```
-
-## Troubleshooting
-
-### Migration Failed
-
-If a migration fails:
-
-1. Check the error message
-2. Verify SQL syntax
-3. Check for constraint violations
-4. Test on a local database first
-
-### Rolling Back
-
-D1 doesn't support automatic rollback. To rollback:
-
-1. Create a new migration with reverse operations
-2. Test thoroughly in local/staging
-3. Apply to production
-
-## Resources
-
-- [Cloudflare D1 Documentation](https://developers.cloudflare.com/d1/)
-- [SQLite Documentation](https://www.sqlite.org/docs.html)
-- [Wrangler CLI Reference](https://developers.cloudflare.com/workers/wrangler/)
