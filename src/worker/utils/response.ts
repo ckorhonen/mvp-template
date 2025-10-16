@@ -1,169 +1,153 @@
 /**
  * Response utility functions for Cloudflare Workers
- * Provides consistent JSON responses, error handling, and CORS
+ * Provides standardized response formatting, error handling, and CORS support
  */
 
-import { ApiResponse, ApiError } from '../types';
+import type { ApiError, ApiResponse } from '../types';
 
 /**
  * CORS headers configuration
  */
-const getCorsHeaders = (origin?: string, allowedOrigins?: string): HeadersInit => {
-  const allowed = allowedOrigins?.split(',').map(o => o.trim()) || ['*'];
-  const allowOrigin = origin && allowed.includes(origin) ? origin : allowed[0];
-
-  return {
-    'Access-Control-Allow-Origin': allowOrigin,
-    'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Request-ID',
-    'Access-Control-Max-Age': '86400',
-  };
+const CORS_HEADERS = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+  'Access-Control-Max-Age': '86400',
 };
 
 /**
- * Create a JSON response with proper headers
+ * Standard JSON headers
+ */
+const JSON_HEADERS = {
+  'Content-Type': 'application/json; charset=utf-8',
+};
+
+/**
+ * Create a successful JSON response
  */
 export function jsonResponse<T>(
   data: T,
   status: number = 200,
-  headers: HeadersInit = {},
-  corsOrigin?: string,
-  allowedOrigins?: string
+  headers: Record<string, string> = {}
 ): Response {
-  return new Response(JSON.stringify(data), {
+  const response: ApiResponse<T> = {
+    success: true,
+    data,
+  };
+
+  return new Response(JSON.stringify(response), {
     status,
     headers: {
-      'Content-Type': 'application/json',
-      ...getCorsHeaders(corsOrigin, allowedOrigins),
+      ...JSON_HEADERS,
+      ...CORS_HEADERS,
       ...headers,
     },
   });
 }
 
 /**
- * Create a successful API response
- */
-export function successResponse<T>(
-  data: T,
-  status: number = 200,
-  requestId?: string,
-  corsOrigin?: string,
-  allowedOrigins?: string
-): Response {
-  const response: ApiResponse<T> = {
-    success: true,
-    data,
-    meta: {
-      requestId,
-      timestamp: Date.now(),
-    },
-  };
-
-  return jsonResponse(response, status, {}, corsOrigin, allowedOrigins);
-}
-
-/**
- * Create an error response
+ * Create an error JSON response
  */
 export function errorResponse(
   message: string,
-  code: string,
-  status: number = 400,
-  details?: any,
-  requestId?: string,
-  corsOrigin?: string,
-  allowedOrigins?: string
+  status: number = 500,
+  code?: string,
+  details?: unknown
 ): Response {
   const error: ApiError = {
-    code,
-    message,
-    details,
-    statusCode: status,
-  };
-
-  const response: ApiResponse = {
     success: false,
-    error,
-    meta: {
-      requestId,
-      timestamp: Date.now(),
+    error: {
+      message,
+      code: code || `ERROR_${status}`,
+      details,
     },
   };
 
-  return jsonResponse(response, status, {}, corsOrigin, allowedOrigins);
+  return new Response(JSON.stringify(error), {
+    status,
+    headers: {
+      ...JSON_HEADERS,
+      ...CORS_HEADERS,
+    },
+  });
 }
 
 /**
  * Handle CORS preflight requests
  */
-export function corsPreflightResponse(origin?: string, allowedOrigins?: string): Response {
+export function corsResponse(): Response {
   return new Response(null, {
     status: 204,
-    headers: getCorsHeaders(origin, allowedOrigins),
+    headers: CORS_HEADERS,
   });
 }
 
 /**
- * Common error responses
+ * Create a streaming response for AI/SSE
  */
-export const ErrorResponses = {
-  badRequest: (message: string = 'Bad request', requestId?: string, corsOrigin?: string, allowedOrigins?: string) =>
-    errorResponse(message, 'BAD_REQUEST', 400, undefined, requestId, corsOrigin, allowedOrigins),
+export function streamResponse(
+  stream: ReadableStream,
+  headers: Record<string, string> = {}
+): Response {
+  return new Response(stream, {
+    headers: {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      ...CORS_HEADERS,
+      ...headers,
+    },
+  });
+}
 
-  unauthorized: (message: string = 'Unauthorized', requestId?: string, corsOrigin?: string, allowedOrigins?: string) =>
-    errorResponse(message, 'UNAUTHORIZED', 401, undefined, requestId, corsOrigin, allowedOrigins),
-
-  forbidden: (message: string = 'Forbidden', requestId?: string, corsOrigin?: string, allowedOrigins?: string) =>
-    errorResponse(message, 'FORBIDDEN', 403, undefined, requestId, corsOrigin, allowedOrigins),
-
-  notFound: (message: string = 'Not found', requestId?: string, corsOrigin?: string, allowedOrigins?: string) =>
-    errorResponse(message, 'NOT_FOUND', 404, undefined, requestId, corsOrigin, allowedOrigins),
-
-  methodNotAllowed: (message: string = 'Method not allowed', requestId?: string, corsOrigin?: string, allowedOrigins?: string) =>
-    errorResponse(message, 'METHOD_NOT_ALLOWED', 405, undefined, requestId, corsOrigin, allowedOrigins),
-
-  conflict: (message: string = 'Conflict', requestId?: string, corsOrigin?: string, allowedOrigins?: string) =>
-    errorResponse(message, 'CONFLICT', 409, undefined, requestId, corsOrigin, allowedOrigins),
-
-  rateLimitExceeded: (message: string = 'Rate limit exceeded', requestId?: string, corsOrigin?: string, allowedOrigins?: string) =>
-    errorResponse(message, 'RATE_LIMIT_EXCEEDED', 429, undefined, requestId, corsOrigin, allowedOrigins),
-
-  internalError: (message: string = 'Internal server error', details?: any, requestId?: string, corsOrigin?: string, allowedOrigins?: string) =>
-    errorResponse(message, 'INTERNAL_ERROR', 500, details, requestId, corsOrigin, allowedOrigins),
-
-  serviceUnavailable: (message: string = 'Service unavailable', requestId?: string, corsOrigin?: string, allowedOrigins?: string) =>
-    errorResponse(message, 'SERVICE_UNAVAILABLE', 503, undefined, requestId, corsOrigin, allowedOrigins),
+/**
+ * Common HTTP error responses
+ */
+export const errorResponses = {
+  badRequest: (message: string = 'Bad Request', details?: unknown) =>
+    errorResponse(message, 400, 'BAD_REQUEST', details),
+  
+  unauthorized: (message: string = 'Unauthorized') =>
+    errorResponse(message, 401, 'UNAUTHORIZED'),
+  
+  forbidden: (message: string = 'Forbidden') =>
+    errorResponse(message, 403, 'FORBIDDEN'),
+  
+  notFound: (message: string = 'Not Found') =>
+    errorResponse(message, 404, 'NOT_FOUND'),
+  
+  methodNotAllowed: (message: string = 'Method Not Allowed') =>
+    errorResponse(message, 405, 'METHOD_NOT_ALLOWED'),
+  
+  conflict: (message: string = 'Conflict') =>
+    errorResponse(message, 409, 'CONFLICT'),
+  
+  tooManyRequests: (message: string = 'Too Many Requests') =>
+    errorResponse(message, 429, 'RATE_LIMIT_EXCEEDED'),
+  
+  internalError: (message: string = 'Internal Server Error', details?: unknown) =>
+    errorResponse(message, 500, 'INTERNAL_ERROR', details),
+  
+  serviceUnavailable: (message: string = 'Service Unavailable') =>
+    errorResponse(message, 503, 'SERVICE_UNAVAILABLE'),
 };
 
 /**
- * Create a redirect response
+ * Redirect response
  */
-export function redirectResponse(url: string, status: 301 | 302 | 307 | 308 = 302): Response {
+export function redirectResponse(
+  url: string,
+  status: 301 | 302 | 307 | 308 = 302
+): Response {
   return Response.redirect(url, status);
 }
 
 /**
- * Create a text response
+ * No content response
  */
-export function textResponse(text: string, status: number = 200, headers: HeadersInit = {}): Response {
-  return new Response(text, {
-    status,
-    headers: {
-      'Content-Type': 'text/plain',
-      ...headers,
-    },
-  });
-}
-
-/**
- * Create an HTML response
- */
-export function htmlResponse(html: string, status: number = 200, headers: HeadersInit = {}): Response {
-  return new Response(html, {
-    status,
-    headers: {
-      'Content-Type': 'text/html',
-      ...headers,
-    },
+export function noContentResponse(): Response {
+  return new Response(null, {
+    status: 204,
+    headers: CORS_HEADERS,
   });
 }

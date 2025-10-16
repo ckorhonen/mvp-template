@@ -1,149 +1,123 @@
 /**
  * Request validation utilities
+ * Provides schema validation, input sanitization, and type guards
  */
 
-import { PaginationParams } from '../types';
-
-/**
- * Validate email format
- */
-export function isValidEmail(email: string): boolean {
-  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-  return emailRegex.test(email);
-}
+import { z } from 'zod';
+import type { ZodSchema } from 'zod';
 
 /**
- * Validate URL format
+ * Validate request body against a Zod schema
  */
-export function isValidUrl(url: string): boolean {
+export async function validateBody<T>(
+  request: Request,
+  schema: ZodSchema<T>
+): Promise<{ success: true; data: T } | { success: false; error: string }> {
   try {
-    new URL(url);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Validate UUID format
- */
-export function isValidUuid(uuid: string): boolean {
-  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-  return uuidRegex.test(uuid);
-}
-
-/**
- * Parse and validate JSON from request body
- */
-export async function parseJsonBody<T>(request: Request): Promise<T> {
-  try {
-    const body = await request.text();
-    if (!body) {
-      throw new Error('Request body is empty');
+    const body = await request.json();
+    const result = schema.safeParse(body);
+    
+    if (!result.success) {
+      return {
+        success: false,
+        error: result.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', '),
+      };
     }
-    return JSON.parse(body) as T;
+    
+    return { success: true, data: result.data };
   } catch (error) {
-    throw new Error('Invalid JSON in request body');
+    return {
+      success: false,
+      error: 'Invalid JSON body',
+    };
   }
 }
 
 /**
- * Validate required fields in an object
+ * Validate query parameters against a Zod schema
  */
-export function validateRequiredFields<T extends Record<string, any>>(
-  data: T,
-  requiredFields: (keyof T)[]
-): { valid: boolean; missing: string[] } {
-  const missing = requiredFields.filter(field => {
-    const value = data[field];
-    return value === undefined || value === null || value === '';
-  }) as string[];
-
-  return {
-    valid: missing.length === 0,
-    missing,
-  };
+export function validateQuery<T>(
+  url: URL,
+  schema: ZodSchema<T>
+): { success: true; data: T } | { success: false; error: string } {
+  const params: Record<string, string> = {};
+  url.searchParams.forEach((value, key) => {
+    params[key] = value;
+  });
+  
+  const result = schema.safeParse(params);
+  
+  if (!result.success) {
+    return {
+      success: false,
+      error: result.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', '),
+    };
+  }
+  
+  return { success: true, data: result.data };
 }
 
 /**
- * Parse pagination parameters from URL
+ * Common validation schemas
  */
-export function parsePaginationParams(url: URL): PaginationParams {
-  const page = Math.max(1, parseInt(url.searchParams.get('page') || '1', 10));
-  const limit = Math.min(100, Math.max(1, parseInt(url.searchParams.get('limit') || '10', 10)));
-  const offset = (page - 1) * limit;
-
-  return { page, limit, offset };
-}
+export const schemas = {
+  id: z.string().uuid('Invalid UUID format'),
+  email: z.string().email('Invalid email address'),
+  url: z.string().url('Invalid URL'),
+  positiveInt: z.number().int().positive('Must be a positive integer'),
+  nonEmptyString: z.string().min(1, 'Cannot be empty'),
+  
+  pagination: z.object({
+    page: z.coerce.number().int().positive().default(1),
+    limit: z.coerce.number().int().positive().max(100).default(20),
+  }),
+  
+  timestamp: z.string().datetime('Invalid ISO 8601 timestamp'),
+};
 
 /**
  * Sanitize string input (basic XSS prevention)
  */
 export function sanitizeString(input: string): string {
   return input
-    .replace(/[<>]/g, '') // Remove < and >
-    .replace(/javascript:/gi, '') // Remove javascript: protocol
-    .replace(/on\w+=/gi, '') // Remove inline event handlers
+    .replace(/[<>]/g, '') // Remove angle brackets
     .trim();
 }
 
 /**
- * Validate and parse integer from string
+ * Type guard for checking if value is a valid JSON object
  */
-export function parseIntSafe(value: string | null, defaultValue: number = 0): number {
-  if (!value) return defaultValue;
-  const parsed = parseInt(value, 10);
-  return isNaN(parsed) ? defaultValue : parsed;
+export function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    !Array.isArray(value)
+  );
 }
 
 /**
- * Type guard to check if value is a string
+ * Validate API key format
  */
-export function isString(value: unknown): value is string {
-  return typeof value === 'string';
+export function isValidApiKey(key: string): boolean {
+  // Example: key should be alphanumeric, 32+ characters
+  return /^[a-zA-Z0-9_-]{32,}$/.test(key);
 }
 
 /**
- * Type guard to check if value is a number
+ * Extract and validate bearer token from Authorization header
  */
-export function isNumber(value: unknown): value is number {
-  return typeof value === 'number' && !isNaN(value);
+export function extractBearerToken(request: Request): string | null {
+  const authHeader = request.headers.get('Authorization');
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return null;
+  }
+  return authHeader.substring(7);
 }
 
 /**
- * Type guard to check if value is an object
+ * Validate request content type
  */
-export function isObject(value: unknown): value is Record<string, any> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-/**
- * Validate password strength
- */
-export function validatePasswordStrength(password: string): {
-  valid: boolean;
-  errors: string[];
-} {
-  const errors: string[] = [];
-
-  if (password.length < 8) {
-    errors.push('Password must be at least 8 characters long');
-  }
-  if (!/[A-Z]/.test(password)) {
-    errors.push('Password must contain at least one uppercase letter');
-  }
-  if (!/[a-z]/.test(password)) {
-    errors.push('Password must contain at least one lowercase letter');
-  }
-  if (!/[0-9]/.test(password)) {
-    errors.push('Password must contain at least one number');
-  }
-  if (!/[!@#$%^&*]/.test(password)) {
-    errors.push('Password must contain at least one special character (!@#$%^&*)');
-  }
-
-  return {
-    valid: errors.length === 0,
-    errors,
-  };
+export function isJsonContentType(request: Request): boolean {
+  const contentType = request.headers.get('Content-Type') || '';
+  return contentType.includes('application/json');
 }

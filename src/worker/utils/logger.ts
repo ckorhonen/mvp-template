@@ -1,72 +1,114 @@
 /**
- * Logging utility for Cloudflare Workers
+ * Structured logging utilities for Cloudflare Workers
  */
 
-import { Env } from '../types';
+export enum LogLevel {
+  DEBUG = 0,
+  INFO = 1,
+  WARN = 2,
+  ERROR = 3,
+}
 
-export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
-
-const LOG_LEVELS: Record<LogLevel, number> = {
-  debug: 0,
-  info: 1,
-  warn: 2,
-  error: 3,
-};
+interface LogContext {
+  requestId?: string;
+  userId?: string;
+  path?: string;
+  method?: string;
+  [key: string]: unknown;
+}
 
 /**
- * Logger class with environment-aware log levels
+ * Logger class with structured logging support
  */
 export class Logger {
   private level: LogLevel;
-  private context?: string;
+  private context: LogContext;
 
-  constructor(env: Env, context?: string) {
-    this.level = env.LOG_LEVEL || 'info';
+  constructor(level: LogLevel = LogLevel.INFO, context: LogContext = {}) {
+    this.level = level;
     this.context = context;
   }
 
-  private shouldLog(level: LogLevel): boolean {
-    return LOG_LEVELS[level] >= LOG_LEVELS[this.level];
+  /**
+   * Create a child logger with additional context
+   */
+  child(context: LogContext): Logger {
+    return new Logger(this.level, { ...this.context, ...context });
   }
 
-  private formatMessage(level: LogLevel, message: string, data?: any): string {
-    const timestamp = new Date().toISOString();
-    const contextStr = this.context ? `[${this.context}]` : '';
-    const dataStr = data ? ` ${JSON.stringify(data)}` : '';
-    return `${timestamp} [${level.toUpperCase()}]${contextStr} ${message}${dataStr}`;
-  }
-
-  debug(message: string, data?: any): void {
-    if (this.shouldLog('debug')) {
-      console.log(this.formatMessage('debug', message, data));
+  /**
+   * Log debug message
+   */
+  debug(message: string, meta?: Record<string, unknown>): void {
+    if (this.level <= LogLevel.DEBUG) {
+      this.log('DEBUG', message, meta);
     }
   }
 
-  info(message: string, data?: any): void {
-    if (this.shouldLog('info')) {
-      console.log(this.formatMessage('info', message, data));
+  /**
+   * Log info message
+   */
+  info(message: string, meta?: Record<string, unknown>): void {
+    if (this.level <= LogLevel.INFO) {
+      this.log('INFO', message, meta);
     }
   }
 
-  warn(message: string, data?: any): void {
-    if (this.shouldLog('warn')) {
-      console.warn(this.formatMessage('warn', message, data));
+  /**
+   * Log warning message
+   */
+  warn(message: string, meta?: Record<string, unknown>): void {
+    if (this.level <= LogLevel.WARN) {
+      this.log('WARN', message, meta);
     }
   }
 
-  error(message: string, error?: Error | any, data?: any): void {
-    if (this.shouldLog('error')) {
-      const errorData = error instanceof Error
-        ? { message: error.message, stack: error.stack, ...data }
-        : { error, ...data };
-      console.error(this.formatMessage('error', message, errorData));
+  /**
+   * Log error message
+   */
+  error(message: string, error?: Error | unknown, meta?: Record<string, unknown>): void {
+    if (this.level <= LogLevel.ERROR) {
+      const errorMeta = error instanceof Error
+        ? { error: error.message, stack: error.stack }
+        : { error };
+      this.log('ERROR', message, { ...errorMeta, ...meta });
     }
+  }
+
+  /**
+   * Internal log method
+   */
+  private log(level: string, message: string, meta?: Record<string, unknown>): void {
+    const logEntry = {
+      timestamp: new Date().toISOString(),
+      level,
+      message,
+      ...this.context,
+      ...meta,
+    };
+
+    console.log(JSON.stringify(logEntry));
   }
 }
 
 /**
- * Create a logger instance
+ * Create a logger instance from environment
  */
-export function createLogger(env: Env, context?: string): Logger {
-  return new Logger(env, context);
+export function createLogger(env: { LOG_LEVEL?: string }, context: LogContext = {}): Logger {
+  const levelMap: Record<string, LogLevel> = {
+    debug: LogLevel.DEBUG,
+    info: LogLevel.INFO,
+    warn: LogLevel.WARN,
+    error: LogLevel.ERROR,
+  };
+
+  const level = levelMap[env.LOG_LEVEL?.toLowerCase() || 'info'] || LogLevel.INFO;
+  return new Logger(level, context);
+}
+
+/**
+ * Generate a unique request ID
+ */
+export function generateRequestId(): string {
+  return `req_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 }
