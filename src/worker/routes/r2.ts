@@ -1,236 +1,189 @@
 /**
- * R2 Storage API Routes
- * File upload, download, and management examples
+ * R2 Storage route examples
+ * Demonstrates object storage operations with Cloudflare R2
  */
 
-import { Env, FileMetadata } from '../types';
-import { successResponse, errorResponse, ErrorResponses } from '../utils/response';
-import { createLogger } from '../utils/logger';
+import type { Env } from '../types';
+import { jsonResponse, errorResponses, noContentResponse } from '../utils/response';
+import { NotFoundError, ValidationError, toApiError } from '../utils/errors';
 
 /**
- * GET /api/r2/files/:key
- * Download a file from R2
+ * POST /api/r2/upload - Upload a file to R2
  */
-export async function handleGetFile(
-  request: Request,
-  env: Env,
-  key: string,
-  requestId?: string
-): Promise<Response> {
-  const logger = createLogger(env, 'r2-get');
-
+export async function handleUpload(request: Request, env: Env): Promise<Response> {
   try {
-    logger.info('Getting file from R2', { key });
-
-    const object = await env.STORAGE.get(key);
-
-    if (!object) {
-      return ErrorResponses.notFound('File not found', requestId);
+    // Check content type
+    const contentType = request.headers.get('Content-Type');
+    if (!contentType) {
+      throw new ValidationError('Content-Type header is required');
     }
 
-    const headers = new Headers();
-    object.writeHttpMetadata(headers);
-    headers.set('etag', object.httpEtag);
+    // Get filename from query param or generate one
+    const url = new URL(request.url);
+    const filename = url.searchParams.get('filename') || `file_${Date.now()}`;
+    const folder = url.searchParams.get('folder') || 'uploads';
+    const key = `${folder}/${filename}`;
 
-    return new Response(object.body, { headers });
-  } catch (error: any) {
-    logger.error('Get file error', error);
-    return ErrorResponses.internalError(
-      'Failed to get file',
-      error.message,
-      requestId
-    );
-  }
-}
-
-/**
- * PUT /api/r2/files/:key
- * Upload a file to R2
- */
-export async function handleUploadFile(
-  request: Request,
-  env: Env,
-  key: string,
-  requestId?: string
-): Promise<Response> {
-  const logger = createLogger(env, 'r2-upload');
-  const origin = request.headers.get('Origin') || undefined;
-
-  try {
-    const contentType = request.headers.get('Content-Type') || 'application/octet-stream';
-    const contentLength = request.headers.get('Content-Length');
-
-    logger.info('Uploading file to R2', { key, contentType, contentLength });
-
-    // Get the file data
-    const body = await request.arrayBuffer();
-
-    // Store file metadata
-    const metadata: FileMetadata = {
-      filename: key,
-      contentType,
-      size: body.byteLength,
-      uploadedBy: undefined, // Add user ID if authenticated
-      metadata: {
-        uploadedAt: new Date().toISOString(),
-      },
-    };
+    // Get file data
+    const fileData = await request.arrayBuffer();
 
     // Upload to R2
-    await env.STORAGE.put(key, body, {
+    await env.UPLOADS.put(key, fileData, {
       httpMetadata: {
         contentType,
       },
       customMetadata: {
-        metadata: JSON.stringify(metadata),
+        uploadedAt: new Date().toISOString(),
+        originalName: filename,
       },
     });
 
-    logger.info('File uploaded successfully', { key });
-
-    return successResponse(
-      { key, size: body.byteLength },
-      201,
-      requestId,
-      origin,
-      env.CORS_ALLOWED_ORIGINS
-    );
-  } catch (error: any) {
-    logger.error('Upload file error', error);
-    return ErrorResponses.internalError(
-      'Failed to upload file',
-      error.message,
-      requestId,
-      origin,
-      env.CORS_ALLOWED_ORIGINS
-    );
-  }
-}
-
-/**
- * DELETE /api/r2/files/:key
- * Delete a file from R2
- */
-export async function handleDeleteFile(
-  request: Request,
-  env: Env,
-  key: string,
-  requestId?: string
-): Promise<Response> {
-  const logger = createLogger(env, 'r2-delete');
-  const origin = request.headers.get('Origin') || undefined;
-
-  try {
-    logger.info('Deleting file from R2', { key });
-
-    await env.STORAGE.delete(key);
-
-    return successResponse(
-      { key },
-      200,
-      requestId,
-      origin,
-      env.CORS_ALLOWED_ORIGINS
-    );
-  } catch (error: any) {
-    logger.error('Delete file error', error);
-    return ErrorResponses.internalError(
-      'Failed to delete file',
-      error.message,
-      requestId,
-      origin,
-      env.CORS_ALLOWED_ORIGINS
-    );
-  }
-}
-
-/**
- * GET /api/r2/files
- * List files in R2
- */
-export async function handleListFiles(
-  request: Request,
-  env: Env,
-  requestId?: string
-): Promise<Response> {
-  const logger = createLogger(env, 'r2-list');
-  const origin = request.headers.get('Origin') || undefined;
-
-  try {
-    const url = new URL(request.url);
-    const prefix = url.searchParams.get('prefix') || '';
-    const limit = Math.min(1000, parseInt(url.searchParams.get('limit') || '100', 10));
-
-    logger.info('Listing files in R2', { prefix, limit });
-
-    const listed = await env.STORAGE.list({
-      prefix,
-      limit,
-    });
-
-    const files = listed.objects.map(obj => ({
-      key: obj.key,
-      size: obj.size,
-      uploaded: obj.uploaded.toISOString(),
-      etag: obj.httpEtag,
-    }));
-
-    return successResponse(
+    return jsonResponse(
       {
-        files,
-        truncated: listed.truncated,
-        count: files.length,
+        key,
+        filename,
+        folder,
+        size: fileData.byteLength,
+        contentType,
+        message: 'File uploaded successfully',
       },
-      200,
-      requestId,
-      origin,
-      env.CORS_ALLOWED_ORIGINS
+      201
     );
-  } catch (error: any) {
-    logger.error('List files error', error);
-    return ErrorResponses.internalError(
-      'Failed to list files',
-      error.message,
-      requestId,
-      origin,
-      env.CORS_ALLOWED_ORIGINS
-    );
+  } catch (error) {
+    const apiError = toApiError(error);
+    return errorResponses.internalError(apiError.message, apiError.details);
   }
 }
 
 /**
- * HEAD /api/r2/files/:key
- * Get file metadata without downloading
+ * GET /api/r2/:key - Download a file from R2
  */
-export async function handleHeadFile(
-  request: Request,
-  env: Env,
-  key: string,
-  requestId?: string
-): Promise<Response> {
-  const logger = createLogger(env, 'r2-head');
-
+export async function handleDownload(key: string, env: Env): Promise<Response> {
   try {
-    logger.info('Getting file metadata from R2', { key });
-
-    const object = await env.STORAGE.head(key);
+    const object = await env.UPLOADS.get(key);
 
     if (!object) {
-      return ErrorResponses.notFound('File not found', requestId);
+      throw new NotFoundError('File');
     }
 
-    const headers = new Headers();
-    object.writeHttpMetadata(headers);
-    headers.set('etag', object.httpEtag);
-    headers.set('content-length', object.size.toString());
+    // Return the file with appropriate headers
+    return new Response(object.body, {
+      headers: {
+        'Content-Type': object.httpMetadata?.contentType || 'application/octet-stream',
+        'Content-Length': String(object.size),
+        'ETag': object.etag,
+        'Cache-Control': 'public, max-age=3600',
+      },
+    });
+  } catch (error) {
+    const apiError = toApiError(error);
+    if (apiError instanceof NotFoundError) {
+      return errorResponses.notFound(`File '${key}' not found`);
+    }
+    return errorResponses.internalError(apiError.message, apiError.details);
+  }
+}
 
-    return new Response(null, { headers });
-  } catch (error: any) {
-    logger.error('Head file error', error);
-    return ErrorResponses.internalError(
-      'Failed to get file metadata',
-      error.message,
-      requestId
+/**
+ * HEAD /api/r2/:key - Get file metadata
+ */
+export async function handleGetMetadata(key: string, env: Env): Promise<Response> {
+  try {
+    const object = await env.UPLOADS.head(key);
+
+    if (!object) {
+      throw new NotFoundError('File');
+    }
+
+    return jsonResponse({
+      key,
+      size: object.size,
+      etag: object.etag,
+      uploadedAt: object.uploaded,
+      contentType: object.httpMetadata?.contentType,
+      customMetadata: object.customMetadata,
+    });
+  } catch (error) {
+    const apiError = toApiError(error);
+    if (apiError instanceof NotFoundError) {
+      return errorResponses.notFound(`File '${key}' not found`);
+    }
+    return errorResponses.internalError(apiError.message, apiError.details);
+  }
+}
+
+/**
+ * DELETE /api/r2/:key - Delete a file from R2
+ */
+export async function handleDeleteFile(key: string, env: Env): Promise<Response> {
+  try {
+    await env.UPLOADS.delete(key);
+    return noContentResponse();
+  } catch (error) {
+    const apiError = toApiError(error);
+    return errorResponses.internalError(apiError.message, apiError.details);
+  }
+}
+
+/**
+ * GET /api/r2 - List files with optional prefix
+ */
+export async function handleListFiles(request: Request, env: Env): Promise<Response> {
+  try {
+    const url = new URL(request.url);
+    const prefix = url.searchParams.get('prefix') || undefined;
+    const limit = parseInt(url.searchParams.get('limit') || '100');
+    const cursor = url.searchParams.get('cursor') || undefined;
+
+    const listed = await env.UPLOADS.list({
+      prefix,
+      limit,
+      cursor,
+    });
+
+    return jsonResponse({
+      objects: listed.objects.map(obj => ({
+        key: obj.key,
+        size: obj.size,
+        etag: obj.etag,
+        uploadedAt: obj.uploaded,
+        contentType: obj.httpMetadata?.contentType,
+      })),
+      truncated: listed.truncated,
+      cursor: listed.cursor,
+    });
+  } catch (error) {
+    const apiError = toApiError(error);
+    return errorResponses.internalError(apiError.message, apiError.details);
+  }
+}
+
+/**
+ * POST /api/r2/multipart/create - Initiate multipart upload
+ */
+export async function handleCreateMultipartUpload(
+  request: Request,
+  env: Env
+): Promise<Response> {
+  try {
+    const { key } = await request.json() as { key: string };
+    
+    if (!key) {
+      throw new ValidationError('Key is required');
+    }
+
+    const multipartUpload = await env.UPLOADS.createMultipartUpload(key);
+
+    return jsonResponse(
+      {
+        key,
+        uploadId: multipartUpload.uploadId,
+        message: 'Multipart upload initiated',
+      },
+      201
     );
+  } catch (error) {
+    const apiError = toApiError(error);
+    return errorResponses.internalError(apiError.message, apiError.details);
   }
 }
