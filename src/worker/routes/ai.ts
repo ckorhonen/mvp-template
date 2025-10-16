@@ -1,192 +1,171 @@
 /**
  * AI Gateway Routes
- * Handles all AI-related API endpoints
+ * Handles AI-related API endpoints
  */
 
-import type { Env } from '../types';
-import { createAIGateway } from '../services/ai-gateway';
-import { jsonResponse, errorResponse } from '../utils/response';
-import type { ChatMessage } from '../services/ai-gateway';
+import { Env } from '../types';
+import { createAIGateway, AIMessage } from '../services/ai-gateway';
+import { successResponse, errorResponse } from '../utils/response';
+import { validateRequest } from '../utils/validation';
 
 /**
- * POST /api/ai/chat
- * Simple chat completion endpoint
+ * POST /api/ai/chat - Simple chat completion
  */
-export async function handleAIChat(
+export async function handleChatCompletion(
   request: Request,
   env: Env
 ): Promise<Response> {
   try {
-    const body = await request.json() as {
-      message: string;
-      systemPrompt?: string;
-      temperature?: number;
-      maxTokens?: number;
-      model?: string;
-    };
-
-    if (!body.message) {
-      return errorResponse('Message is required', 400);
-    }
-
-    const ai = createAIGateway(env);
-    const response = await ai.complete(body.message, {
-      systemPrompt: body.systemPrompt,
-      temperature: body.temperature,
-      maxTokens: body.maxTokens,
-      model: body.model,
+    // Validate request body
+    const body = await request.json();
+    const validation = validateRequest(body, {
+      message: { type: 'string', required: true, minLength: 1 },
+      systemPrompt: { type: 'string', required: false },
+      temperature: { type: 'number', required: false, min: 0, max: 2 },
+      maxTokens: { type: 'number', required: false, min: 1, max: 4096 },
+      model: { type: 'string', required: false },
     });
 
-    return jsonResponse({
-      success: true,
-      data: {
-        response,
-        model: body.model || env.AI_DEFAULT_MODEL || 'gpt-4o-mini',
+    if (!validation.valid) {
+      return errorResponse(validation.errors.join(', '), 400);
+    }
+
+    const { message, systemPrompt, temperature, maxTokens, model } = body;
+
+    // Create AI Gateway service
+    const ai = createAIGateway(env);
+
+    // Get completion
+    const completion = await ai.complete(message, {
+      systemPrompt,
+      temperature,
+      maxTokens,
+      model,
+    });
+
+    return successResponse({
+      response: completion,
+      metadata: {
+        model: model || env.AI_DEFAULT_MODEL || 'gpt-4o-mini',
+        timestamp: new Date().toISOString(),
       },
     });
   } catch (error) {
-    console.error('AI chat error:', error);
+    console.error('AI chat completion error:', error);
     return errorResponse(
-      error instanceof Error ? error.message : 'Failed to process AI request',
+      error instanceof Error ? error.message : 'Failed to process chat completion',
       500
     );
   }
 }
 
 /**
- * POST /api/ai/completion
- * Full chat completion endpoint
+ * POST /api/ai/stream - Streaming chat completion
  */
-export async function handleAICompletion(
+export async function handleStreamingCompletion(
   request: Request,
   env: Env
 ): Promise<Response> {
   try {
-    const body = await request.json() as {
-      messages: ChatMessage[];
-      model?: string;
-      temperature?: number;
-      max_tokens?: number;
-      stream?: boolean;
-    };
-
-    if (!body.messages || !Array.isArray(body.messages)) {
-      return errorResponse('Messages array is required', 400);
-    }
-
-    const ai = createAIGateway(env);
-
-    // Handle streaming
-    if (body.stream) {
-      const stream = await ai.createChatCompletionStream({
-        model: body.model || env.AI_DEFAULT_MODEL || 'gpt-4o-mini',
-        messages: body.messages,
-        temperature: body.temperature,
-        max_tokens: body.max_tokens,
-        stream: true,
-      });
-
-      return new Response(stream, {
-        headers: {
-          'Content-Type': 'text/event-stream',
-          'Cache-Control': 'no-cache',
-          Connection: 'keep-alive',
-        },
-      });
-    }
-
-    // Non-streaming completion
-    const completion = await ai.createChatCompletion({
-      model: body.model || env.AI_DEFAULT_MODEL || 'gpt-4o-mini',
-      messages: body.messages,
-      temperature: body.temperature,
-      max_tokens: body.max_tokens,
+    // Validate request body
+    const body = await request.json();
+    const validation = validateRequest(body, {
+      messages: { type: 'array', required: true },
+      model: { type: 'string', required: false },
+      temperature: { type: 'number', required: false, min: 0, max: 2 },
+      maxTokens: { type: 'number', required: false, min: 1, max: 4096 },
     });
 
-    return jsonResponse({
-      success: true,
-      data: completion,
+    if (!validation.valid) {
+      return errorResponse(validation.errors.join(', '), 400);
+    }
+
+    const { messages, model, temperature, maxTokens } = body;
+
+    // Create AI Gateway service
+    const ai = createAIGateway(env);
+
+    // Get streaming response
+    const stream = await ai.createStreamingCompletion({
+      messages: messages as AIMessage[],
+      model,
+      temperature,
+      maxTokens,
+    });
+
+    // Return streaming response
+    return new Response(stream, {
+      headers: {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+      },
     });
   } catch (error) {
-    console.error('AI completion error:', error);
+    console.error('AI streaming error:', error);
     return errorResponse(
-      error instanceof Error ? error.message : 'Failed to process completion',
+      error instanceof Error ? error.message : 'Failed to process streaming completion',
       500
     );
   }
 }
 
 /**
- * GET /api/ai/models
- * List available AI models
+ * POST /api/ai/embeddings - Create text embeddings
  */
-export async function handleAIModels(
+export async function handleEmbeddings(
   request: Request,
   env: Env
 ): Promise<Response> {
   try {
+    // Validate request body
+    const body = await request.json();
+    const validation = validateRequest(body, {
+      input: { type: ['string', 'array'], required: true },
+      model: { type: 'string', required: false },
+    });
+
+    if (!validation.valid) {
+      return errorResponse(validation.errors.join(', '), 400);
+    }
+
+    const { input, model } = body;
+
+    // Create AI Gateway service
     const ai = createAIGateway(env);
+
+    // Create embeddings
+    const embeddings = await ai.createEmbeddings(input, model);
+
+    return successResponse(embeddings);
+  } catch (error) {
+    console.error('AI embeddings error:', error);
+    return errorResponse(
+      error instanceof Error ? error.message : 'Failed to create embeddings',
+      500
+    );
+  }
+}
+
+/**
+ * GET /api/ai/models - List available models
+ */
+export async function handleListModels(
+  request: Request,
+  env: Env
+): Promise<Response> {
+  try {
+    // Create AI Gateway service
+    const ai = createAIGateway(env);
+
+    // List models
     const models = await ai.listModels();
 
-    return jsonResponse({
-      success: true,
-      data: {
-        models,
-        default: env.AI_DEFAULT_MODEL || 'gpt-4o-mini',
-      },
-    });
+    return successResponse(models);
   } catch (error) {
-    console.error('AI models error:', error);
+    console.error('AI list models error:', error);
     return errorResponse(
       error instanceof Error ? error.message : 'Failed to list models',
-      500
-    );
-  }
-}
-
-/**
- * POST /api/ai/cached-chat
- * Cached chat completion endpoint
- */
-export async function handleAICachedChat(
-  request: Request,
-  env: Env
-): Promise<Response> {
-  try {
-    const body = await request.json() as {
-      message: string;
-      systemPrompt?: string;
-      temperature?: number;
-      maxTokens?: number;
-      model?: string;
-      cacheTTL?: number;
-    };
-
-    if (!body.message) {
-      return errorResponse('Message is required', 400);
-    }
-
-    const ai = createAIGateway(env);
-    const response = await ai.cachedComplete(body.message, {
-      systemPrompt: body.systemPrompt,
-      temperature: body.temperature,
-      maxTokens: body.maxTokens,
-      model: body.model,
-      cacheTTL: body.cacheTTL,
-    });
-
-    return jsonResponse({
-      success: true,
-      data: {
-        response,
-        cached: true,
-        model: body.model || env.AI_DEFAULT_MODEL || 'gpt-4o-mini',
-      },
-    });
-  } catch (error) {
-    console.error('AI cached chat error:', error);
-    return errorResponse(
-      error instanceof Error ? error.message : 'Failed to process cached chat',
       500
     );
   }

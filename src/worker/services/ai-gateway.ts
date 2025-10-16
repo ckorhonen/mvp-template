@@ -1,31 +1,25 @@
 /**
- * AI Gateway Service
- * Provides integration with Cloudflare AI Gateway and OpenAI
- * 
- * Features:
- * - Automatic caching via AI Gateway
- * - Rate limiting
- * - Error handling and retries
- * - Streaming support
- * - Multiple model support
+ * Cloudflare AI Gateway Service
+ * Integrates with OpenAI through Cloudflare AI Gateway for caching and monitoring
  */
 
-import type { Env } from '../types';
+import { Env } from '../types';
 
 export interface AIMessage {
   role: 'system' | 'user' | 'assistant';
   content: string;
 }
 
-export interface ChatCompletionRequest {
+export interface ChatCompletionOptions {
   model?: string;
   messages: AIMessage[];
   temperature?: number;
-  max_tokens?: number;
+  maxTokens?: number;
+  topP?: number;
+  frequencyPenalty?: number;
+  presencePenalty?: number;
   stream?: boolean;
-  top_p?: number;
-  frequency_penalty?: number;
-  presence_penalty?: number;
+  user?: string;
 }
 
 export interface ChatCompletionResponse {
@@ -45,167 +39,47 @@ export interface ChatCompletionResponse {
   };
 }
 
-export interface AIGatewayConfig {
-  apiKey: string;
-  gatewayId: string;
-  accountId: string;
-  defaultModel?: string;
-  defaultTemperature?: number;
-  defaultMaxTokens?: number;
-  timeout?: number;
+export interface StreamChunk {
+  id: string;
+  object: string;
+  created: number;
+  model: string;
+  choices: Array<{
+    index: number;
+    delta: Partial<AIMessage>;
+    finish_reason: string | null;
+  }>;
 }
 
-export class AIGatewayError extends Error {
-  constructor(
-    message: string,
-    public statusCode: number,
-    public code?: string,
-    public details?: any
-  ) {
-    super(message);
-    this.name = 'AIGatewayError';
-  }
-}
+export class AIGatewayService {
+  private env: Env;
+  private baseUrl: string;
+  private apiKey: string;
 
-/**
- * Creates an AI Gateway service instance
- */
-export function createAIGateway(env: Env) {
-  const config: AIGatewayConfig = {
-    apiKey: env.OPENAI_API_KEY,
-    gatewayId: env.AI_GATEWAY_ID,
-    accountId: env.CLOUDFLARE_ACCOUNT_ID,
-    defaultModel: env.AI_DEFAULT_MODEL || 'gpt-4o-mini',
-    defaultTemperature: parseFloat(env.AI_DEFAULT_TEMPERATURE || '0.7'),
-    defaultMaxTokens: parseInt(env.AI_DEFAULT_MAX_TOKENS || '1000'),
-    timeout: 30000, // 30 seconds
-  };
+  constructor(env: Env) {
+    this.env = env;
+    this.apiKey = env.OPENAI_API_KEY;
 
-  /**
-   * Get the AI Gateway endpoint URL
-   */
-  function getEndpoint(): string {
-    return `https://gateway.ai.cloudflare.com/v1/${config.accountId}/${config.gatewayId}/openai`;
-  }
-
-  /**
-   * Make a request to the AI Gateway
-   */
-  async function makeRequest(
-    endpoint: string,
-    options: RequestInit
-  ): Promise<Response> {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), config.timeout!);
-
-    try {
-      const response = await fetch(endpoint, {
-        ...options,
-        signal: controller.signal,
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${config.apiKey}`,
-          ...options.headers,
-        },
-      });
-
-      clearTimeout(timeoutId);
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new AIGatewayError(
-          errorData.error?.message || `AI Gateway error: ${response.status}`,
-          response.status,
-          errorData.error?.code,
-          errorData
-        );
-      }
-
-      return response;
-    } catch (error: any) {
-      clearTimeout(timeoutId);
-
-      if (error.name === 'AbortError') {
-        throw new AIGatewayError('Request timeout', 408);
-      }
-
-      if (error instanceof AIGatewayError) {
-        throw error;
-      }
-
-      throw new AIGatewayError(
-        `Network error: ${error.message}`,
-        500,
-        'network_error',
-        error
-      );
+    // Construct AI Gateway URL
+    // Format: https://gateway.ai.cloudflare.com/v1/{account_id}/{gateway_id}/openai
+    if (env.AI_GATEWAY_ID && env.CLOUDFLARE_ACCOUNT_ID) {
+      this.baseUrl = `https://gateway.ai.cloudflare.com/v1/${env.CLOUDFLARE_ACCOUNT_ID}/${env.AI_GATEWAY_ID}/openai`;
+    } else {
+      // Fallback to direct OpenAI API
+      this.baseUrl = 'https://api.openai.com/v1';
     }
   }
 
   /**
-   * Create a chat completion
+   * Simple completion helper - wrapper for chat completion
    */
-  async function createChatCompletion(
-    request: ChatCompletionRequest
-  ): Promise<ChatCompletionResponse> {
-    const payload = {
-      model: request.model || config.defaultModel,
-      messages: request.messages,
-      temperature: request.temperature ?? config.defaultTemperature,
-      max_tokens: request.max_tokens ?? config.defaultMaxTokens,
-      top_p: request.top_p,
-      frequency_penalty: request.frequency_penalty,
-      presence_penalty: request.presence_penalty,
-      stream: false,
-    };
-
-    const response = await makeRequest(`${getEndpoint()}/chat/completions`, {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    });
-
-    return response.json();
-  }
-
-  /**
-   * Create a streaming chat completion
-   */
-  async function createStreamingChatCompletion(
-    request: ChatCompletionRequest
-  ): Promise<ReadableStream> {
-    const payload = {
-      model: request.model || config.defaultModel,
-      messages: request.messages,
-      temperature: request.temperature ?? config.defaultTemperature,
-      max_tokens: request.max_tokens ?? config.defaultMaxTokens,
-      top_p: request.top_p,
-      frequency_penalty: request.frequency_penalty,
-      presence_penalty: request.presence_penalty,
-      stream: true,
-    };
-
-    const response = await makeRequest(`${getEndpoint()}/chat/completions`, {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    });
-
-    if (!response.body) {
-      throw new AIGatewayError('No response body', 500);
-    }
-
-    return response.body;
-  }
-
-  /**
-   * Simple completion helper - wraps chat completion with a single user message
-   */
-  async function complete(
+  async complete(
     prompt: string,
     options?: {
       systemPrompt?: string;
-      model?: string;
       temperature?: number;
       maxTokens?: number;
+      model?: string;
     }
   ): Promise<string> {
     const messages: AIMessage[] = [];
@@ -222,50 +96,182 @@ export function createAIGateway(env: Env) {
       content: prompt,
     });
 
-    const response = await createChatCompletion({
-      model: options?.model,
+    const response = await this.createChatCompletion({
+      model: options?.model || this.env.AI_DEFAULT_MODEL || 'gpt-4o-mini',
       messages,
       temperature: options?.temperature,
-      max_tokens: options?.maxTokens,
+      maxTokens: options?.maxTokens,
     });
 
     return response.choices[0]?.message.content || '';
   }
 
   /**
-   * List available models
+   * Create a chat completion
    */
-  async function listModels(): Promise<any> {
-    const response = await makeRequest(`${getEndpoint()}/models`, {
-      method: 'GET',
+  async createChatCompletion(
+    options: ChatCompletionOptions
+  ): Promise<ChatCompletionResponse> {
+    const url = `${this.baseUrl}/chat/completions`;
+
+    const body: Record<string, unknown> = {
+      model: options.model || this.env.AI_DEFAULT_MODEL || 'gpt-4o-mini',
+      messages: options.messages,
+    };
+
+    // Add optional parameters
+    if (options.temperature !== undefined) {
+      body.temperature = options.temperature;
+    }
+    if (options.maxTokens !== undefined) {
+      body.max_tokens = options.maxTokens;
+    }
+    if (options.topP !== undefined) {
+      body.top_p = options.topP;
+    }
+    if (options.frequencyPenalty !== undefined) {
+      body.frequency_penalty = options.frequencyPenalty;
+    }
+    if (options.presencePenalty !== undefined) {
+      body.presence_penalty = options.presencePenalty;
+    }
+    if (options.user !== undefined) {
+      body.user = options.user;
+    }
+    if (options.stream) {
+      body.stream = true;
+    }
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${this.apiKey}`,
+      },
+      body: JSON.stringify(body),
     });
+
+    if (!response.ok) {
+      const error = await response.text();
+      throw new Error(`AI Gateway error: ${response.status} - ${error}`);
+    }
 
     return response.json();
   }
 
   /**
-   * Generate embeddings
+   * Create a streaming chat completion
    */
-  async function createEmbedding(
-    input: string | string[],
-    model: string = 'text-embedding-ada-002'
-  ): Promise<any> {
-    const response = await makeRequest(`${getEndpoint()}/embeddings`, {
+  async createStreamingCompletion(
+    options: ChatCompletionOptions
+  ): Promise<ReadableStream> {
+    const url = `${this.baseUrl}/chat/completions`;
+
+    const body: Record<string, unknown> = {
+      model: options.model || this.env.AI_DEFAULT_MODEL || 'gpt-4o-mini',
+      messages: options.messages,
+      stream: true,
+    };
+
+    // Add optional parameters
+    if (options.temperature !== undefined) {
+      body.temperature = options.temperature;
+    }
+    if (options.maxTokens !== undefined) {
+      body.max_tokens = options.maxTokens;
+    }
+    if (options.topP !== undefined) {
+      body.top_p = options.topP;
+    }
+
+    const response = await fetch(url, {
       method: 'POST',
-      body: JSON.stringify({ input, model }),
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${this.apiKey}`,
+      },
+      body: JSON.stringify(body),
     });
+
+    if (!response.ok) {
+      const error = await response.text();
+      throw new Error(`AI Gateway error: ${response.status} - ${error}`);
+    }
+
+    if (!response.body) {
+      throw new Error('No response body');
+    }
+
+    return response.body;
+  }
+
+  /**
+   * Create embeddings for text
+   */
+  async createEmbeddings(
+    input: string | string[],
+    model = 'text-embedding-3-small'
+  ): Promise<{
+    object: string;
+    data: Array<{ object: string; embedding: number[]; index: number }>;
+    model: string;
+    usage: { prompt_tokens: number; total_tokens: number };
+  }> {
+    const url = `${this.baseUrl}/embeddings`;
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${this.apiKey}`,
+      },
+      body: JSON.stringify({
+        model,
+        input,
+      }),
+    });
+
+    if (!response.ok) {
+      const error = await response.text();
+      throw new Error(`AI Gateway error: ${response.status} - ${error}`);
+    }
 
     return response.json();
   }
 
-  return {
-    createChatCompletion,
-    createStreamingChatCompletion,
-    complete,
-    listModels,
-    createEmbedding,
-    config,
-  };
+  /**
+   * List available models
+   */
+  async listModels(): Promise<{
+    object: string;
+    data: Array<{
+      id: string;
+      object: string;
+      created: number;
+      owned_by: string;
+    }>;
+  }> {
+    const url = `${this.baseUrl}/models`;
+
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${this.apiKey}`,
+      },
+    });
+
+    if (!response.ok) {
+      const error = await response.text();
+      throw new Error(`AI Gateway error: ${response.status} - ${error}`);
+    }
+
+    return response.json();
+  }
 }
 
-export type AIGateway = ReturnType<typeof createAIGateway>;
+/**
+ * Factory function to create AI Gateway service
+ */
+export function createAIGateway(env: Env): AIGatewayService {
+  return new AIGatewayService(env);
+}
