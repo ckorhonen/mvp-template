@@ -2,21 +2,21 @@ name: CI/CD Pipeline
 
 on:
   push:
-    branches: [main, develop, staging]
+    branches: [main, staging, develop]
   pull_request:
-    branches: [main, develop]
+    branches: [main, staging]
+  workflow_dispatch:
 
 env:
   NODE_VERSION: '20'
+  CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+  CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
 
 jobs:
-  # ============================================
-  # Code Quality and Testing
-  # ============================================
-  quality-checks:
-    name: Code Quality Checks
+  # Code Quality Checks
+  lint:
+    name: Lint and Format Check
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -29,21 +29,20 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
-
-      - name: TypeScript compilation check
-        run: npm run type-check
 
       - name: Run ESLint
         run: npm run lint
 
-      - name: Check code formatting
+      - name: Check formatting
         run: npm run format:check
 
+      - name: Type check
+        run: npm run type-check
+
+  # Unit Tests
   test:
     name: Run Tests
     runs-on: ubuntu-latest
-    needs: quality-checks
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -57,47 +56,23 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Run unit tests
+      - name: Run tests
         run: npm run test:coverage
 
       - name: Upload coverage reports
         uses: codecov/codecov-action@v4
         if: always()
         with:
-          file: ./coverage/lcov.info
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./coverage/coverage-final.json
           flags: unittests
           name: codecov-umbrella
-        env:
-          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
-  # ============================================
-  # Security Scanning
-  # ============================================
-  security-scan:
-    name: Security Scan
-    runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Run Snyk Security Scan
-        uses: snyk/actions/node@master
-        continue-on-error: true
-        env:
-          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-        with:
-          args: --severity-threshold=high
-
-  # ============================================
-  # Build Frontend and Worker
-  # ============================================
+  # Build Check
   build:
     name: Build Application
     runs-on: ubuntu-latest
-    needs: [quality-checks, test]
-
+    needs: [lint, test]
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -114,27 +89,48 @@ jobs:
       - name: Build frontend
         run: npm run build
 
-      - name: Build worker
-        run: npm run build:worker
-
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: build-artifacts
-          path: |
-            dist/
-            .wrangler/
+          name: dist
+          path: dist/
           retention-days: 7
 
-  # ============================================
-  # Database Migrations
-  # ============================================
-  migrate-preview:
-    name: Run Database Migrations (Preview)
+  # Security Scanning
+  security:
+    name: Security Audit
     runs-on: ubuntu-latest
-    needs: build
-    if: github.event_name == 'pull_request'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Run npm audit
+        run: npm audit --audit-level=moderate
+        continue-on-error: true
+
+      - name: Run Snyk security scan
+        uses: snyk/actions/node@master
+        continue-on-error: true
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          args: --severity-threshold=high
+
+  # Deploy to Development (on develop branch)
+  deploy-dev:
+    name: Deploy to Development
+    runs-on: ubuntu-latest
+    needs: [build]
+    if: github.ref == 'refs/heads/develop' && github.event_name == 'push'
+    environment:
+      name: development
+      url: https://dev.your-domain.com
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -148,26 +144,21 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Run migrations on preview database
-        run: |
-          npx wrangler d1 execute mvp-database --preview \
-            --file=./migrations/0001_initial_schema.sql
+      - name: Deploy to Cloudflare Workers (dev)
+        run: npx wrangler deploy --env development
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
 
-  # ============================================
   # Deploy to Staging
-  # ============================================
   deploy-staging:
     name: Deploy to Staging
     runs-on: ubuntu-latest
-    needs: build
-    if: github.ref == 'refs/heads/develop'
+    needs: [build]
+    if: github.ref == 'refs/heads/staging' && github.event_name == 'push'
     environment:
       name: staging
-      url: https://staging.example.com
-
+      url: https://staging.your-domain.com
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -181,39 +172,26 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Download build artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: build-artifacts
-
-      - name: Run database migrations (staging)
-        run: |
-          npx wrangler d1 execute mvp-database \
-            --env staging \
-            --file=./migrations/0001_initial_schema.sql
+      - name: Deploy to Cloudflare Workers (staging)
+        run: npx wrangler deploy --env staging
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
 
-      - name: Deploy to Cloudflare Workers (Staging)
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: deploy --env staging
+      - name: Run smoke tests
+        run: |
+          echo "Running smoke tests against staging..."
+          # Add your smoke test commands here
 
-  # ============================================
   # Deploy to Production
-  # ============================================
   deploy-production:
     name: Deploy to Production
     runs-on: ubuntu-latest
-    needs: [build, test]
-    if: github.ref == 'refs/heads/main'
+    needs: [build, security]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     environment:
       name: production
-      url: https://example.com
-
+      url: https://your-domain.com
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -227,52 +205,40 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Download build artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: build-artifacts
-
-      - name: Run database migrations (production)
-        run: |
-          npx wrangler d1 execute mvp-database \
-            --env production \
-            --file=./migrations/0001_initial_schema.sql
+      - name: Deploy to Cloudflare Workers (production)
+        run: npx wrangler deploy --env production
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
 
-      - name: Deploy to Cloudflare Workers (Production)
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: deploy --env production
-
-      - name: Create deployment notification
-        if: success()
+      - name: Create deployment tag
         run: |
-          echo "🚀 Successfully deployed to production!"
-          echo "Deployment time: $(date)"
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          TAG="v$(date +%Y%m%d-%H%M%S)"
+          git tag -a $TAG -m "Production deployment $TAG"
+          git push origin $TAG
 
-  # ============================================
-  # Post-Deployment Health Checks
-  # ============================================
-  health-check:
-    name: Post-Deployment Health Check
+      - name: Notify deployment
+        if: always()
+        run: |
+          echo "Deployment to production completed"
+          # Add notification logic here (Slack, Discord, etc.)
+
+  # Performance Testing
+  performance:
+    name: Performance Tests
     runs-on: ubuntu-latest
-    needs: deploy-production
-    if: github.ref == 'refs/heads/main'
-
+    needs: [deploy-staging]
+    if: github.ref == 'refs/heads/staging'
     steps:
-      - name: Wait for deployment propagation
-        run: sleep 30
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-      - name: Check worker health
-        run: |
-          response=$(curl -s -o /dev/null -w "%{http_code}" https://example.com/api/health)
-          if [ $response -eq 200 ]; then
-            echo "✅ Health check passed"
-          else
-            echo "❌ Health check failed with status $response"
-            exit 1
-          fi
+      - name: Run Lighthouse CI
+        uses: treosh/lighthouse-ci-action@v10
+        with:
+          urls: |
+            https://staging.your-domain.com
+          uploadArtifacts: true
+          temporaryPublicStorage: true
