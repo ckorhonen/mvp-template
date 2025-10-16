@@ -1,105 +1,74 @@
 /**
- * Custom error classes for structured error handling
+ * Custom Error Classes
  */
 
-/**
- * Base API error class
- */
-export class ApiError extends Error {
+export class AppError extends Error {
   constructor(
-    message: string,
+    public message: string,
     public statusCode: number = 500,
     public code: string = 'INTERNAL_ERROR',
-    public details?: unknown
+    public details?: Record<string, unknown>
   ) {
     super(message);
-    this.name = 'ApiError';
+    this.name = this.constructor.name;
+    Error.captureStackTrace(this, this.constructor);
+  }
+
+  toJSON() {
+    return {
+      name: this.name,
+      message: this.message,
+      statusCode: this.statusCode,
+      code: this.code,
+      details: this.details,
+    };
   }
 }
 
-/**
- * Validation error (400)
- */
-export class ValidationError extends ApiError {
-  constructor(message: string, details?: unknown) {
+export class ValidationError extends AppError {
+  constructor(message: string, details?: Record<string, unknown>) {
     super(message, 400, 'VALIDATION_ERROR', details);
-    this.name = 'ValidationError';
   }
 }
 
-/**
- * Authentication error (401)
- */
-export class AuthenticationError extends ApiError {
-  constructor(message: string = 'Authentication required') {
-    super(message, 401, 'AUTHENTICATION_ERROR');
-    this.name = 'AuthenticationError';
+export class NotFoundError extends AppError {
+  constructor(message: string = 'Resource not found', details?: Record<string, unknown>) {
+    super(message, 404, 'NOT_FOUND', details);
   }
 }
 
-/**
- * Authorization error (403)
- */
-export class AuthorizationError extends ApiError {
-  constructor(message: string = 'Insufficient permissions') {
-    super(message, 403, 'AUTHORIZATION_ERROR');
-    this.name = 'AuthorizationError';
+export class UnauthorizedError extends AppError {
+  constructor(message: string = 'Unauthorized', details?: Record<string, unknown>) {
+    super(message, 401, 'UNAUTHORIZED', details);
   }
 }
 
-/**
- * Not found error (404)
- */
-export class NotFoundError extends ApiError {
-  constructor(resource: string = 'Resource') {
-    super(`${resource} not found`, 404, 'NOT_FOUND');
-    this.name = 'NotFoundError';
+export class ForbiddenError extends AppError {
+  constructor(message: string = 'Forbidden', details?: Record<string, unknown>) {
+    super(message, 403, 'FORBIDDEN', details);
   }
 }
 
-/**
- * Conflict error (409)
- */
-export class ConflictError extends ApiError {
-  constructor(message: string = 'Resource already exists') {
-    super(message, 409, 'CONFLICT');
-    this.name = 'ConflictError';
+export class RateLimitError extends AppError {
+  constructor(message: string = 'Rate limit exceeded', details?: Record<string, unknown>) {
+    super(message, 429, 'RATE_LIMIT_EXCEEDED', details);
   }
 }
 
-/**
- * Rate limit error (429)
- */
-export class RateLimitError extends ApiError {
-  constructor(message: string = 'Rate limit exceeded') {
-    super(message, 429, 'RATE_LIMIT_EXCEEDED');
-    this.name = 'RateLimitError';
+export class AIGatewayError extends AppError {
+  constructor(message: string, statusCode: number = 500, details?: Record<string, unknown>) {
+    super(message, statusCode, 'AI_GATEWAY_ERROR', details);
   }
 }
 
-/**
- * External service error (502)
- */
-export class ExternalServiceError extends ApiError {
-  constructor(service: string, details?: unknown) {
-    super(`External service error: ${service}`, 502, 'EXTERNAL_SERVICE_ERROR', details);
-    this.name = 'ExternalServiceError';
+export class DatabaseError extends AppError {
+  constructor(message: string, details?: Record<string, unknown>) {
+    super(message, 500, 'DATABASE_ERROR', details);
   }
 }
 
-/**
- * Convert unknown error to ApiError
- */
-export function toApiError(error: unknown): ApiError {
-  if (error instanceof ApiError) {
-    return error;
+export class StorageError extends AppError {
+  constructor(message: string, details?: Record<string, unknown>) {
+    super(message, 500, 'STORAGE_ERROR', details);
   }
-  
-  if (error instanceof Error) {
-    return new ApiError(error.message, 500, 'INTERNAL_ERROR', {
-      stack: error.stack,
-    });
-  }
-  
-  return new ApiError('An unknown error occurred', 500, 'UNKNOWN_ERROR', error);
 }

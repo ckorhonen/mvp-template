@@ -1,114 +1,63 @@
 /**
- * Structured logging utilities for Cloudflare Workers
+ * Structured Logging Utility
  */
 
-export enum LogLevel {
-  DEBUG = 0,
-  INFO = 1,
-  WARN = 2,
-  ERROR = 3,
+import { Env } from '../types/env';
+
+export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
+
+interface LogEntry {
+  level: LogLevel;
+  message: string;
+  timestamp: string;
+  data?: Record<string, unknown>;
+  environment?: string;
 }
 
-interface LogContext {
-  requestId?: string;
-  userId?: string;
-  path?: string;
-  method?: string;
-  [key: string]: unknown;
-}
-
-/**
- * Logger class with structured logging support
- */
 export class Logger {
-  private level: LogLevel;
-  private context: LogContext;
+  private readonly logLevel: LogLevel;
+  private readonly environment: string;
 
-  constructor(level: LogLevel = LogLevel.INFO, context: LogContext = {}) {
-    this.level = level;
-    this.context = context;
+  constructor(env: Env) {
+    this.logLevel = (env.LOG_LEVEL?.toLowerCase() as LogLevel) || 'info';
+    this.environment = env.ENVIRONMENT || 'development';
   }
 
-  /**
-   * Create a child logger with additional context
-   */
-  child(context: LogContext): Logger {
-    return new Logger(this.level, { ...this.context, ...context });
+  debug(message: string, data?: Record<string, unknown>): void {
+    this.log('debug', message, data);
   }
 
-  /**
-   * Log debug message
-   */
-  debug(message: string, meta?: Record<string, unknown>): void {
-    if (this.level <= LogLevel.DEBUG) {
-      this.log('DEBUG', message, meta);
+  info(message: string, data?: Record<string, unknown>): void {
+    this.log('info', message, data);
+  }
+
+  warn(message: string, data?: Record<string, unknown>): void {
+    this.log('warn', message, data);
+  }
+
+  error(message: string, data?: Record<string, unknown>): void {
+    this.log('error', message, data);
+  }
+
+  private log(level: LogLevel, message: string, data?: Record<string, unknown>): void {
+    if (!this.shouldLog(level)) {
+      return;
     }
-  }
 
-  /**
-   * Log info message
-   */
-  info(message: string, meta?: Record<string, unknown>): void {
-    if (this.level <= LogLevel.INFO) {
-      this.log('INFO', message, meta);
-    }
-  }
-
-  /**
-   * Log warning message
-   */
-  warn(message: string, meta?: Record<string, unknown>): void {
-    if (this.level <= LogLevel.WARN) {
-      this.log('WARN', message, meta);
-    }
-  }
-
-  /**
-   * Log error message
-   */
-  error(message: string, error?: Error | unknown, meta?: Record<string, unknown>): void {
-    if (this.level <= LogLevel.ERROR) {
-      const errorMeta = error instanceof Error
-        ? { error: error.message, stack: error.stack }
-        : { error };
-      this.log('ERROR', message, { ...errorMeta, ...meta });
-    }
-  }
-
-  /**
-   * Internal log method
-   */
-  private log(level: string, message: string, meta?: Record<string, unknown>): void {
-    const logEntry = {
-      timestamp: new Date().toISOString(),
+    const entry: LogEntry = {
       level,
       message,
-      ...this.context,
-      ...meta,
+      timestamp: new Date().toISOString(),
+      environment: this.environment,
+      ...(data && { data }),
     };
 
-    console.log(JSON.stringify(logEntry));
+    const logFn = level === 'error' ? console.error : level === 'warn' ? console.warn : console.log;
+    logFn(JSON.stringify(entry));
   }
-}
 
-/**
- * Create a logger instance from environment
- */
-export function createLogger(env: { LOG_LEVEL?: string }, context: LogContext = {}): Logger {
-  const levelMap: Record<string, LogLevel> = {
-    debug: LogLevel.DEBUG,
-    info: LogLevel.INFO,
-    warn: LogLevel.WARN,
-    error: LogLevel.ERROR,
-  };
-
-  const level = levelMap[env.LOG_LEVEL?.toLowerCase() || 'info'] || LogLevel.INFO;
-  return new Logger(level, context);
-}
-
-/**
- * Generate a unique request ID
- */
-export function generateRequestId(): string {
-  return `req_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  private shouldLog(level: LogLevel): boolean {
+    const levels: LogLevel[] = ['debug', 'info', 'warn', 'error'];
+    return levels.indexOf(level) >= levels.indexOf(this.logLevel);
+  }
 }
