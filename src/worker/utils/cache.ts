@@ -1,102 +1,122 @@
 /**
- * Cache utility functions for KV and Cache API
+ * KV Cache utility functions for Cloudflare Workers
  */
 
-export interface CacheOptions {
-  ttl?: number; // Time to live in seconds
-  metadata?: Record<string, any>;
+import { KVNamespace } from '@cloudflare/workers-types';
+import { CacheConfig } from '../types';
+
+/**
+ * Cache wrapper for KV namespace
+ */
+export class KVCache {
+  constructor(private kv: KVNamespace) {}
+
+  /**
+   * Get a value from cache
+   */
+  async get<T>(key: string): Promise<T | null> {
+    try {
+      const value = await this.kv.get(key, 'text');
+      if (!value) return null;
+      return JSON.parse(value) as T;
+    } catch (error) {
+      console.error('Cache get error:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Set a value in cache with TTL
+   */
+  async set<T>(key: string, value: T, ttl: number = 3600): Promise<void> {
+    try {
+      await this.kv.put(key, JSON.stringify(value), {
+        expirationTtl: ttl,
+      });
+    } catch (error) {
+      console.error('Cache set error:', error);
+    }
+  }
+
+  /**
+   * Delete a value from cache
+   */
+  async delete(key: string): Promise<void> {
+    try {
+      await this.kv.delete(key);
+    } catch (error) {
+      console.error('Cache delete error:', error);
+    }
+  }
+
+  /**
+   * Get or set a value (cache-aside pattern)
+   */
+  async getOrSet<T>(
+    key: string,
+    factory: () => Promise<T>,
+    ttl: number = 3600
+  ): Promise<T> {
+    // Try to get from cache first
+    const cached = await this.get<T>(key);
+    if (cached !== null) {
+      return cached;
+    }
+
+    // Generate new value
+    const value = await factory();
+
+    // Store in cache (don't await to avoid blocking)
+    this.set(key, value, ttl).catch(err => 
+      console.error('Background cache set failed:', err)
+    );
+
+    return value;
+  }
+
+  /**
+   * List keys with a prefix
+   */
+  async listKeys(prefix: string, limit: number = 100): Promise<string[]> {
+    try {
+      const list = await this.kv.list({ prefix, limit });
+      return list.keys.map(k => k.name);
+    } catch (error) {
+      console.error('Cache list error:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Bulk delete keys with a prefix
+   */
+  async deleteByPrefix(prefix: string): Promise<number> {
+    try {
+      const keys = await this.listKeys(prefix, 1000);
+      await Promise.all(keys.map(key => this.delete(key)));
+      return keys.length;
+    } catch (error) {
+      console.error('Cache bulk delete error:', error);
+      return 0;
+    }
+  }
 }
 
-export class CacheManager {
-  /**
-   * Get data from KV with automatic JSON parsing
-   */
-  static async getFromKV<T>(
-    kv: KVNamespace,
-    key: string
-  ): Promise<T | null> {
-    const value = await kv.get(key, { type: 'json' });
-    return value as T | null;
-  }
+/**
+ * Generate cache key with namespace
+ */
+export function generateCacheKey(...parts: (string | number)[]): string {
+  return parts.join(':');
+}
 
-  /**
-   * Set data in KV with automatic JSON serialization
-   */
-  static async setInKV<T>(
-    kv: KVNamespace,
-    key: string,
-    value: T,
-    options?: CacheOptions
-  ): Promise<void> {
-    const kvOptions: KVNamespacePutOptions = {};
-    
-    if (options?.ttl) {
-      kvOptions.expirationTtl = options.ttl;
-    }
-    
-    if (options?.metadata) {
-      kvOptions.metadata = options.metadata;
-    }
-
-    await kv.put(key, JSON.stringify(value), kvOptions);
-  }
-
-  /**
-   * Delete data from KV
-   */
-  static async deleteFromKV(
-    kv: KVNamespace,
-    key: string
-  ): Promise<void> {
-    await kv.delete(key);
-  }
-
-  /**
-   * Cache API wrapper for HTTP responses
-   */
-  static async cacheResponse(
-    request: Request,
-    response: Response,
-    cacheName: string = 'default',
-    ttl: number = 3600
-  ): Promise<Response> {
-    // Clone response before caching
-    const responseToCache = response.clone();
-    
-    // Add cache headers
-    const headers = new Headers(responseToCache.headers);
-    headers.set('Cache-Control', `public, max-age=${ttl}`);
-    
-    const cachedResponse = new Response(responseToCache.body, {
-      status: responseToCache.status,
-      statusText: responseToCache.statusText,
-      headers,
-    });
-
-    // Store in cache
-    const cache = await caches.open(cacheName);
-    await cache.put(request, cachedResponse);
-
-    return response;
-  }
-
-  /**
-   * Get cached response
-   */
-  static async getCached(
-    request: Request,
-    cacheName: string = 'default'
-  ): Promise<Response | undefined> {
-    const cache = await caches.open(cacheName);
-    return await cache.match(request);
-  }
-
-  /**
-   * Generate cache key from request
-   */
-  static generateCacheKey(request: Request, suffix?: string): string {
-    const url = new URL(request.url);
-    const key = `${url.pathname}${url.search}`;
-    return suffix ? `${key}:${suffix}` : key;
-  }
+/**
+ * Cache-aside pattern helper
+ */
+export async function cacheAside<T>(
+  kv: KVNamespace,
+  config: CacheConfig,
+  factory: () => Promise<T>
+): Promise<T> {
+  const cache = new KVCache(kv);
+  return cache.getOrSet(config.key, factory, config.ttl);
 }
