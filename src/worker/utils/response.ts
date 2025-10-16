@@ -1,255 +1,179 @@
 /**
  * Response Utilities
  * 
- * Helper functions for creating standardized HTTP responses
+ * Helpers for creating standardized JSON responses with proper headers.
  */
 
-export interface ApiResponse<T = any> {
+export interface APIResponse<T = unknown> {
   success: boolean;
   data?: T;
   error?: {
-    code: string;
     message: string;
-    details?: any;
+    code?: string;
+    details?: unknown;
   };
   meta?: {
     timestamp: string;
     requestId?: string;
-    [key: string]: any;
   };
 }
 
 export interface ResponseOptions {
-  headers?: Record<string, string>;
   status?: number;
+  headers?: HeadersInit;
+  cors?: boolean;
   requestId?: string;
+}
+
+/**
+ * Create a JSON response
+ */
+export function jsonResponse<T>(
+  data: APIResponse<T>,
+  options: ResponseOptions = {}
+): Response {
+  const {
+    status = 200,
+    headers: customHeaders = {},
+    cors = true,
+    requestId,
+  } = options;
+
+  const headers = new Headers(customHeaders);
+  headers.set('Content-Type', 'application/json');
+
+  if (cors) {
+    headers.set('Access-Control-Allow-Origin', '*');
+    headers.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    headers.set('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  }
+
+  if (requestId) {
+    headers.set('X-Request-ID', requestId);
+  }
+
+  return new Response(JSON.stringify(data), { status, headers });
 }
 
 /**
  * Create a success response
  */
-export function createSuccessResponse<T>(
+export function successResponse<T>(
   data: T,
-  options: ResponseOptions = {},
+  options: ResponseOptions = {}
 ): Response {
-  const response: ApiResponse<T> = {
-    success: true,
-    data,
-    meta: {
-      timestamp: new Date().toISOString(),
-      requestId: options.requestId,
+  return jsonResponse(
+    {
+      success: true,
+      data,
+      meta: {
+        timestamp: new Date().toISOString(),
+        requestId: options.requestId,
+      },
     },
-  };
-
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    ...options.headers,
-  };
-
-  return new Response(JSON.stringify(response), {
-    status: options.status || 200,
-    headers,
-  });
+    options
+  );
 }
 
 /**
  * Create an error response
  */
-export function createErrorResponse(
-  code: string,
+export function errorResponse(
   message: string,
-  options: ResponseOptions & { details?: any } = {},
+  options: ResponseOptions & { code?: string; details?: unknown } = {}
 ): Response {
-  const response: ApiResponse = {
-    success: false,
-    error: {
-      code,
-      message,
-      details: options.details,
+  const { code, details, status = 400, ...restOptions } = options;
+  
+  return jsonResponse(
+    {
+      success: false,
+      error: {
+        message,
+        code,
+        details,
+      },
+      meta: {
+        timestamp: new Date().toISOString(),
+        requestId: options.requestId,
+      },
     },
-    meta: {
-      timestamp: new Date().toISOString(),
-      requestId: options.requestId,
-    },
-  };
+    { ...restOptions, status }
+  );
+}
 
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    ...options.headers,
-  };
+/**
+ * Create a not found response
+ */
+export function notFoundResponse(message = 'Resource not found'): Response {
+  return errorResponse(message, { status: 404, code: 'NOT_FOUND' });
+}
 
-  return new Response(JSON.stringify(response), {
-    status: options.status || 500,
-    headers,
+/**
+ * Create an unauthorized response
+ */
+export function unauthorizedResponse(message = 'Unauthorized'): Response {
+  return errorResponse(message, { status: 401, code: 'UNAUTHORIZED' });
+}
+
+/**
+ * Create a forbidden response
+ */
+export function forbiddenResponse(message = 'Forbidden'): Response {
+  return errorResponse(message, { status: 403, code: 'FORBIDDEN' });
+}
+
+/**
+ * Create a method not allowed response
+ */
+export function methodNotAllowedResponse(
+  allowed: string[] = ['GET', 'POST']
+): Response {
+  return errorResponse('Method not allowed', {
+    status: 405,
+    code: 'METHOD_NOT_ALLOWED',
+    headers: { 'Allow': allowed.join(', ') },
   });
 }
 
 /**
- * Create a 400 Bad Request response
+ * Create a rate limit exceeded response
  */
-export function badRequest(
-  message: string = 'Bad Request',
-  options: ResponseOptions & { details?: any } = {},
+export function rateLimitResponse(
+  retryAfter: number,
+  message = 'Rate limit exceeded'
 ): Response {
-  return createErrorResponse('BAD_REQUEST', message, {
-    ...options,
-    status: 400,
-  });
-}
-
-/**
- * Create a 401 Unauthorized response
- */
-export function unauthorized(
-  message: string = 'Unauthorized',
-  options: ResponseOptions = {},
-): Response {
-  return createErrorResponse('UNAUTHORIZED', message, {
-    ...options,
-    status: 401,
-  });
-}
-
-/**
- * Create a 403 Forbidden response
- */
-export function forbidden(
-  message: string = 'Forbidden',
-  options: ResponseOptions = {},
-): Response {
-  return createErrorResponse('FORBIDDEN', message, {
-    ...options,
-    status: 403,
-  });
-}
-
-/**
- * Create a 404 Not Found response
- */
-export function notFound(
-  message: string = 'Not Found',
-  options: ResponseOptions = {},
-): Response {
-  return createErrorResponse('NOT_FOUND', message, {
-    ...options,
-    status: 404,
-  });
-}
-
-/**
- * Create a 429 Too Many Requests response
- */
-export function tooManyRequests(
-  message: string = 'Too Many Requests',
-  options: ResponseOptions & { retryAfter?: number } = {},
-): Response {
-  const headers: Record<string, string> = {
-    ...options.headers,
-  };
-
-  if (options.retryAfter) {
-    headers['Retry-After'] = options.retryAfter.toString();
-  }
-
-  return createErrorResponse('RATE_LIMIT_EXCEEDED', message, {
-    ...options,
+  return errorResponse(message, {
     status: 429,
-    headers,
+    code: 'RATE_LIMIT_EXCEEDED',
+    headers: { 'Retry-After': retryAfter.toString() },
   });
 }
 
 /**
- * Create a 500 Internal Server Error response
+ * Create a server error response
  */
-export function internalServerError(
-  message: string = 'Internal Server Error',
-  options: ResponseOptions & { details?: any } = {},
+export function serverErrorResponse(
+  message = 'Internal server error',
+  error?: Error
 ): Response {
-  return createErrorResponse('INTERNAL_SERVER_ERROR', message, {
-    ...options,
+  return errorResponse(message, {
     status: 500,
+    code: 'INTERNAL_SERVER_ERROR',
+    details: process.env.NODE_ENV === 'development' ? error?.stack : undefined,
   });
 }
 
 /**
- * Create a 503 Service Unavailable response
+ * Create a CORS preflight response
  */
-export function serviceUnavailable(
-  message: string = 'Service Unavailable',
-  options: ResponseOptions = {},
-): Response {
-  return createErrorResponse('SERVICE_UNAVAILABLE', message, {
-    ...options,
-    status: 503,
-  });
-}
-
-/**
- * Create a redirect response
- */
-export function redirect(
-  url: string,
-  options: { permanent?: boolean; headers?: Record<string, string> } = {},
-): Response {
+export function corsPreflightResponse(allowedOrigin = '*'): Response {
   return new Response(null, {
-    status: options.permanent ? 301 : 302,
+    status: 204,
     headers: {
-      Location: url,
-      ...options.headers,
+      'Access-Control-Allow-Origin': allowedOrigin,
+      'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+      'Access-Control-Max-Age': '86400',
     },
-  });
-}
-
-/**
- * Create a JSON response with custom status
- */
-export function json<T>(
-  data: T,
-  options: ResponseOptions = {},
-): Response {
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    ...options.headers,
-  };
-
-  return new Response(JSON.stringify(data), {
-    status: options.status || 200,
-    headers,
-  });
-}
-
-/**
- * Create a text response
- */
-export function text(
-  content: string,
-  options: ResponseOptions = {},
-): Response {
-  const headers: Record<string, string> = {
-    'Content-Type': 'text/plain',
-    ...options.headers,
-  };
-
-  return new Response(content, {
-    status: options.status || 200,
-    headers,
-  });
-}
-
-/**
- * Create an HTML response
- */
-export function html(
-  content: string,
-  options: ResponseOptions = {},
-): Response {
-  const headers: Record<string, string> = {
-    'Content-Type': 'text/html',
-    ...options.headers,
-  };
-
-  return new Response(content, {
-    status: options.status || 200,
-    headers,
   });
 }
