@@ -1,14 +1,22 @@
 /**
- * Comprehensive TypeScript type definitions for Cloudflare Workers MVP Template
+ * Type definitions for Cloudflare Workers MVP Template
  */
 
-import type { D1Database, KVNamespace, R2Bucket, AnalyticsEngineDataset, Queue } from '@cloudflare/workers-types';
+import { D1Database, KVNamespace, R2Bucket } from '@cloudflare/workers-types';
 
-// ============================================
-// Environment Bindings
-// ============================================
-
+/**
+ * Environment bindings and variables
+ */
 export interface Env {
+  // Cloudflare Account
+  CLOUDFLARE_ACCOUNT_ID: string;
+
+  // OpenAI Configuration
+  OPENAI_API_KEY: string;
+
+  // AI Gateway
+  AI_GATEWAY_ID: string;
+
   // D1 Database
   DB: D1Database;
 
@@ -20,275 +28,87 @@ export interface Env {
   ASSETS: R2Bucket;
   UPLOADS: R2Bucket;
 
-  // AI Binding
-  AI: any; // Cloudflare AI binding
-
-  // Analytics Engine
-  ANALYTICS: AnalyticsEngineDataset;
-
-  // Queues
-  TASK_QUEUE: Queue;
-
-  // Durable Objects
-  RATE_LIMITER: DurableObjectNamespace;
-
-  // Environment Variables
-  ENVIRONMENT: 'development' | 'staging' | 'production';
+  // Worker Configuration
+  ENVIRONMENT: string;
   LOG_LEVEL: 'debug' | 'info' | 'warn' | 'error';
-  AI_GATEWAY_ID: string;
-  OPENAI_API_KEY: string;
+  API_VERSION?: string;
 
-  // Optional secrets
+  // CORS Configuration
+  CORS_ALLOWED_ORIGINS?: string;
+
+  // Rate Limiting
+  RATE_LIMIT_REQUESTS_PER_MINUTE?: string;
+
+  // Session Configuration
+  SESSION_DURATION_SECONDS?: string;
   SESSION_SECRET?: string;
-  WEBHOOK_SECRET?: string;
+
+  // Feature Flags
+  FEATURE_AI_ENABLED?: string;
+  FEATURE_ANALYTICS_ENABLED?: string;
 }
 
-// ============================================
-// API Types
-// ============================================
-
-export interface ApiResponse<T = any> {
-  success: boolean;
-  data?: T;
-  error?: string;
-  message?: string;
-  timestamp: string;
-  requestId?: string;
-}
-
-export interface ErrorResponse {
-  success: false;
-  error: string;
-  message: string;
-  statusCode: number;
-  timestamp: string;
-  requestId?: string;
-  stack?: string;
-}
-
-export interface PaginatedResponse<T> {
-  success: true;
-  data: T[];
-  pagination: {
-    page: number;
-    perPage: number;
-    total: number;
-    totalPages: number;
-    hasNext: boolean;
-    hasPrev: boolean;
+/**
+ * Request context (can be extended with auth, user info, etc.)
+ */
+export interface RequestContext {
+  request: Request;
+  env: Env;
+  ctx: ExecutionContext;
+  user?: {
+    id: string;
+    email: string;
+    name?: string;
   };
-  timestamp: string;
 }
 
-// ============================================
-// AI Gateway Types
-// ============================================
-
-export interface AIGatewayConfig {
-  accountId: string;
-  gatewayId: string;
-  provider: 'openai' | 'anthropic' | 'azure' | 'workers-ai';
-  model: string;
-  cacheTTL?: number;
-}
-
-export interface ChatMessage {
-  role: 'system' | 'user' | 'assistant';
-  content: string;
-}
-
-export interface ChatCompletionRequest {
-  messages: ChatMessage[];
-  model?: string;
-  temperature?: number;
-  maxTokens?: number;
-  stream?: boolean;
-}
-
-export interface ChatCompletionResponse {
-  id: string;
-  model: string;
-  choices: Array<{
-    message: ChatMessage;
-    finishReason: string;
-    index: number;
-  }>;
-  usage: {
-    promptTokens: number;
-    completionTokens: number;
-    totalTokens: number;
-  };
-  cached?: boolean;
-}
-
-// ============================================
-// D1 Database Types
-// ============================================
-
+/**
+ * Database models
+ */
 export interface User {
   id: string;
   email: string;
-  name: string;
-  createdAt: string;
-  updatedAt: string;
-  metadata?: Record<string, any>;
+  name?: string;
+  created_at: number;
+  updated_at: number;
 }
 
 export interface Session {
   id: string;
-  userId: string;
-  token: string;
-  expiresAt: string;
-  createdAt: string;
-  metadata?: Record<string, any>;
+  user_id: string;
+  expires_at: number;
+  data?: string;
+  created_at: number;
 }
 
-export interface DBQueryResult<T = any> {
-  results: T[];
-  success: boolean;
-  meta: {
-    duration: number;
-    rowsRead: number;
-    rowsWritten: number;
-  };
-}
-
-// ============================================
-// KV Cache Types
-// ============================================
-
-export interface CacheOptions {
-  expirationTtl?: number;
-  expiration?: number;
-  metadata?: Record<string, any>;
-}
-
-export interface CacheEntry<T = any> {
-  value: T;
-  metadata?: Record<string, any>;
-  cachedAt: string;
-  expiresAt?: string;
-}
-
-// ============================================
-// R2 Storage Types
-// ============================================
-
-export interface FileMetadata {
-  filename: string;
-  contentType: string;
-  size: number;
-  uploadedAt: string;
-  uploadedBy?: string;
-  customMetadata?: Record<string, string>;
-}
-
-export interface UploadResult {
-  key: string;
-  bucket: string;
-  size: number;
-  etag: string;
-  url: string;
-  metadata: FileMetadata;
-}
-
-// ============================================
-// Rate Limiting Types
-// ============================================
-
-export interface RateLimitConfig {
-  requestsPerMinute?: number;
-  requestsPerHour?: number;
-  requestsPerDay?: number;
-}
-
-export interface RateLimitStatus {
-  allowed: boolean;
-  remaining: number;
-  resetAt: number;
-  retryAfter?: number;
-}
-
-// ============================================
-// Analytics Types
-// ============================================
-
-export interface AnalyticsEvent {
-  timestamp?: number;
-  event: string;
-  userId?: string;
-  sessionId?: string;
-  metadata?: Record<string, any>;
-  blobs?: string[];
-  doubles?: number[];
-  indexes?: string[];
-}
-
-// ============================================
-// Queue Types
-// ============================================
-
-export interface TaskMessage {
+export interface ApiKey {
   id: string;
-  type: string;
-  payload: Record<string, any>;
-  retries?: number;
-  createdAt: string;
+  user_id: string;
+  key_hash: string;
+  name?: string;
+  last_used_at?: number;
+  expires_at?: number;
+  created_at: number;
 }
 
-export interface TaskResult {
-  success: boolean;
-  taskId: string;
-  result?: any;
-  error?: string;
+export interface Project {
+  id: string;
+  user_id: string;
+  name: string;
+  description?: string;
+  settings?: string;
+  created_at: number;
+  updated_at: number;
 }
 
-// ============================================
-// Request Context
-// ============================================
-
-export interface RequestContext {
-  requestId: string;
-  ip: string;
-  country?: string;
-  city?: string;
-  region?: string;
-  userAgent?: string;
-  startTime: number;
-}
-
-// ============================================
-// Middleware Types
-// ============================================
-
-export type MiddlewareHandler = (
-  request: Request,
-  env: Env,
-  ctx: ExecutionContext,
-  context: RequestContext
-) => Promise<Response | null>;
-
-export type RouteHandler = (
-  request: Request,
-  env: Env,
-  ctx: ExecutionContext,
-  context: RequestContext
-) => Promise<Response>;
-
-// ============================================
-// Router Types
-// ============================================
-
-export interface Route {
-  method: 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH' | 'OPTIONS';
-  pattern: string | RegExp;
-  handler: RouteHandler;
-  middleware?: MiddlewareHandler[];
-}
-
-export interface RouterConfig {
-  basePath?: string;
-  routes: Route[];
-  notFoundHandler?: RouteHandler;
-  errorHandler?: (error: Error, request: Request, env: Env) => Promise<Response>;
+export interface AuditLog {
+  id: string;
+  user_id?: string;
+  action: string;
+  resource_type?: string;
+  resource_id?: string;
+  metadata?: string;
+  ip_address?: string;
+  user_agent?: string;
+  created_at: number;
 }
