@@ -1,135 +1,74 @@
 /**
- * Database Service - D1 Database Utilities
- * 
- * Provides a type-safe wrapper around Cloudflare D1 with common database operations,
- * query builders, and transaction support.
+ * D1 Database Service
+ * Provides type-safe database operations with connection pooling,
+ * query building, and transaction support.
  */
 
-import { Env } from '../types';
+import type { D1Database, D1Result } from '@cloudflare/workers-types';
+import type { Env, DbUser, DbSession, DbApiKey } from '../types';
 
-export interface QueryResult<T = any> {
-  success: boolean;
-  results: T[];
-  meta?: {
-    duration: number;
-    rows_read: number;
-    rows_written: number;
-  };
+export interface QueryOptions {
+  timeout?: number;
 }
 
-export interface DatabaseConfig {
-  enableLogging?: boolean;
-  enableMetrics?: boolean;
-}
-
-export class DatabaseError extends Error {
-  constructor(
-    message: string,
-    public statusCode: number = 500,
-    public code: string = 'DATABASE_ERROR',
-  ) {
-    super(message);
-    this.name = 'DatabaseError';
-  }
+export interface TransactionCallback {
+  (tx: D1Database): Promise<void>;
 }
 
 /**
- * Database Service Class
- * Provides a high-level interface for D1 database operations
+ * Database Service
  */
 export class DatabaseService {
-  private readonly db: D1Database;
-  private readonly config: DatabaseConfig;
-
-  constructor(env: Env, config: DatabaseConfig = {}) {
-    if (!env.DB) {
-      throw new DatabaseError(
-        'D1 database binding not configured',
-        500,
-        'MISSING_DATABASE_BINDING',
-      );
-    }
-
-    this.db = env.DB;
-    this.config = {
-      enableLogging: config.enableLogging ?? false,
-      enableMetrics: config.enableMetrics ?? true,
-    };
-  }
+  constructor(private readonly db: D1Database) {}
 
   /**
-   * Execute a single query
+   * Execute a raw SQL query
    */
-  async query<T = any>(
+  async query<T = unknown>(
     sql: string,
-    params: any[] = [],
-  ): Promise<QueryResult<T>> {
-    const startTime = Date.now();
-
+    params: unknown[] = [],
+    options?: QueryOptions
+  ): Promise<D1Result<T>> {
     try {
-      if (this.config.enableLogging) {
-        console.log('Executing query:', sql, params);
-      }
-
-      const result = await this.db.prepare(sql).bind(...params).all();
-
-      const duration = Date.now() - startTime;
-
-      if (this.config.enableLogging) {
-        console.log(`Query completed in ${duration}ms`);
-      }
-
-      return {
-        success: result.success,
-        results: (result.results as T[]) || [],
-        meta: result.meta
-          ? {
-              duration,
-              rows_read: result.meta.rows_read || 0,
-              rows_written: result.meta.rows_written || 0,
-            }
-          : undefined,
-      };
+      const stmt = this.db.prepare(sql).bind(...params);
+      return await stmt.all<T>();
     } catch (error) {
-      throw new DatabaseError(
-        `Query failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
-        500,
-        'QUERY_FAILED',
+      throw new Error(
+        `Database query failed: ${error instanceof Error ? error.message : 'Unknown error'}`
       );
     }
   }
 
   /**
-   * Execute a query and return the first result
+   * Execute a query and return first result
    */
-  async queryFirst<T = any>(sql: string, params: any[] = []): Promise<T | null> {
+  async queryOne<T = unknown>(
+    sql: string,
+    params: unknown[] = []
+  ): Promise<T | null> {
     try {
-      const result = await this.db.prepare(sql).bind(...params).first();
-      return (result as T) || null;
+      const stmt = this.db.prepare(sql).bind(...params);
+      return await stmt.first<T>();
     } catch (error) {
-      throw new DatabaseError(
-        `Query failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
-        500,
-        'QUERY_FAILED',
+      throw new Error(
+        `Database query failed: ${error instanceof Error ? error.message : 'Unknown error'}`
       );
     }
   }
 
   /**
-   * Execute a query without returning results (INSERT, UPDATE, DELETE)
+   * Execute a write operation (INSERT, UPDATE, DELETE)
    */
-  async execute(sql: string, params: any[] = []): Promise<D1Result> {
+  async execute(
+    sql: string,
+    params: unknown[] = []
+  ): Promise<D1Result> {
     try {
-      if (this.config.enableLogging) {
-        console.log('Executing statement:', sql, params);
-      }
-
-      return await this.db.prepare(sql).bind(...params).run();
+      const stmt = this.db.prepare(sql).bind(...params);
+      return await stmt.run();
     } catch (error) {
-      throw new DatabaseError(
-        `Execute failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
-        500,
-        'EXECUTE_FAILED',
+      throw new Error(
+        `Database execution failed: ${error instanceof Error ? error.message : 'Unknown error'}`
       );
     }
   }
@@ -137,201 +76,192 @@ export class DatabaseService {
   /**
    * Execute multiple statements in a batch
    */
-  async batch(statements: { sql: string; params?: any[] }[]): Promise<D1Result[]> {
+  async batch(
+    statements: Array<{ sql: string; params?: unknown[] }>
+  ): Promise<D1Result[]> {
     try {
-      const prepared = statements.map((stmt) =>
-        this.db.prepare(stmt.sql).bind(...(stmt.params || [])),
+      const stmts = statements.map(({ sql, params = [] }) =>
+        this.db.prepare(sql).bind(...params)
       );
-
-      return await this.db.batch(prepared);
+      return await this.db.batch(stmts);
     } catch (error) {
-      throw new DatabaseError(
-        `Batch failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
-        500,
-        'BATCH_FAILED',
+      throw new Error(
+        `Database batch failed: ${error instanceof Error ? error.message : 'Unknown error'}`
       );
     }
   }
 
-  /**
-   * Simple SELECT query builder
-   */
-  select<T = any>(table: string, where?: Record<string, any>): QueryBuilder<T> {
-    return new QueryBuilder<T>(this, table, where);
+  // User operations
+  async createUser(user: Omit<DbUser, 'id' | 'created_at' | 'updated_at'>): Promise<DbUser> {
+    const id = crypto.randomUUID();
+    const now = new Date().toISOString();
+
+    await this.execute(
+      `INSERT INTO users (id, email, name, password_hash, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [id, user.email, user.name, user.password_hash, now, now]
+    );
+
+    const created = await this.queryOne<DbUser>(
+      'SELECT * FROM users WHERE id = ?',
+      [id]
+    );
+
+    if (!created) {
+      throw new Error('Failed to create user');
+    }
+
+    return created;
   }
 
-  /**
-   * Simple INSERT operation
-   */
-  async insert(
-    table: string,
-    data: Record<string, any>,
-  ): Promise<{ id?: number; changes: number }> {
-    const keys = Object.keys(data);
-    const values = Object.values(data);
-    const placeholders = keys.map(() => '?').join(', ');
-
-    const sql = `INSERT INTO ${table} (${keys.join(', ')}) VALUES (${placeholders})`;
-
-    try {
-      const result = await this.execute(sql, values);
-      return {
-        id: result.meta?.last_row_id,
-        changes: result.meta?.changes || 0,
-      };
-    } catch (error) {
-      throw new DatabaseError(
-        `Insert failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
-        500,
-        'INSERT_FAILED',
-      );
-    }
+  async getUserById(id: string): Promise<DbUser | null> {
+    return await this.queryOne<DbUser>(
+      'SELECT * FROM users WHERE id = ?',
+      [id]
+    );
   }
 
-  /**
-   * Simple UPDATE operation
-   */
-  async update(
-    table: string,
-    data: Record<string, any>,
-    where: Record<string, any>,
-  ): Promise<{ changes: number }> {
-    const setClause = Object.keys(data)
-      .map((key) => `${key} = ?`)
-      .join(', ');
-    const whereClause = Object.keys(where)
-      .map((key) => `${key} = ?`)
-      .join(' AND ');
-
-    const sql = `UPDATE ${table} SET ${setClause} WHERE ${whereClause}`;
-    const params = [...Object.values(data), ...Object.values(where)];
-
-    try {
-      const result = await this.execute(sql, params);
-      return { changes: result.meta?.changes || 0 };
-    } catch (error) {
-      throw new DatabaseError(
-        `Update failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
-        500,
-        'UPDATE_FAILED',
-      );
-    }
+  async getUserByEmail(email: string): Promise<DbUser | null> {
+    return await this.queryOne<DbUser>(
+      'SELECT * FROM users WHERE email = ?',
+      [email]
+    );
   }
 
-  /**
-   * Simple DELETE operation
-   */
-  async delete(
-    table: string,
-    where: Record<string, any>,
-  ): Promise<{ changes: number }> {
-    const whereClause = Object.keys(where)
-      .map((key) => `${key} = ?`)
-      .join(' AND ');
+  async updateUser(
+    id: string,
+    updates: Partial<Pick<DbUser, 'name' | 'email'>>
+  ): Promise<DbUser | null> {
+    const fields: string[] = [];
+    const values: unknown[] = [];
 
-    const sql = `DELETE FROM ${table} WHERE ${whereClause}`;
-    const params = Object.values(where);
-
-    try {
-      const result = await this.execute(sql, params);
-      return { changes: result.meta?.changes || 0 };
-    } catch (error) {
-      throw new DatabaseError(
-        `Delete failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
-        500,
-        'DELETE_FAILED',
-      );
+    if (updates.name !== undefined) {
+      fields.push('name = ?');
+      values.push(updates.name);
     }
+    if (updates.email !== undefined) {
+      fields.push('email = ?');
+      values.push(updates.email);
+    }
+
+    if (fields.length === 0) {
+      return await this.getUserById(id);
+    }
+
+    fields.push('updated_at = ?');
+    values.push(new Date().toISOString());
+    values.push(id);
+
+    await this.execute(
+      `UPDATE users SET ${fields.join(', ')} WHERE id = ?`,
+      values
+    );
+
+    return await this.getUserById(id);
+  }
+
+  async deleteUser(id: string): Promise<boolean> {
+    const result = await this.execute(
+      'DELETE FROM users WHERE id = ?',
+      [id]
+    );
+    return result.success && (result.meta?.changes ?? 0) > 0;
+  }
+
+  // Session operations
+  async createSession(session: Omit<DbSession, 'created_at'>): Promise<DbSession> {
+    const now = new Date().toISOString();
+
+    await this.execute(
+      `INSERT INTO sessions (id, user_id, token, expires_at, created_at)
+       VALUES (?, ?, ?, ?, ?)`,
+      [session.id, session.user_id, session.token, session.expires_at, now]
+    );
+
+    const created = await this.queryOne<DbSession>(
+      'SELECT * FROM sessions WHERE id = ?',
+      [session.id]
+    );
+
+    if (!created) {
+      throw new Error('Failed to create session');
+    }
+
+    return created;
+  }
+
+  async getSessionByToken(token: string): Promise<DbSession | null> {
+    return await this.queryOne<DbSession>(
+      'SELECT * FROM sessions WHERE token = ? AND expires_at > datetime("now")',
+      [token]
+    );
+  }
+
+  async deleteSession(id: string): Promise<boolean> {
+    const result = await this.execute(
+      'DELETE FROM sessions WHERE id = ?',
+      [id]
+    );
+    return result.success && (result.meta?.changes ?? 0) > 0;
+  }
+
+  async deleteExpiredSessions(): Promise<number> {
+    const result = await this.execute(
+      'DELETE FROM sessions WHERE expires_at <= datetime("now")'
+    );
+    return result.meta?.changes ?? 0;
+  }
+
+  // API Key operations
+  async createApiKey(apiKey: Omit<DbApiKey, 'created_at' | 'last_used_at'>): Promise<DbApiKey> {
+    const now = new Date().toISOString();
+
+    await this.execute(
+      `INSERT INTO api_keys (id, user_id, key_hash, name, created_at, expires_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [apiKey.id, apiKey.user_id, apiKey.key_hash, apiKey.name, now, apiKey.expires_at]
+    );
+
+    const created = await this.queryOne<DbApiKey>(
+      'SELECT * FROM api_keys WHERE id = ?',
+      [apiKey.id]
+    );
+
+    if (!created) {
+      throw new Error('Failed to create API key');
+    }
+
+    return created;
+  }
+
+  async getApiKeyByHash(keyHash: string): Promise<DbApiKey | null> {
+    return await this.queryOne<DbApiKey>(
+      `SELECT * FROM api_keys 
+       WHERE key_hash = ? 
+       AND (expires_at IS NULL OR expires_at > datetime("now"))`,
+      [keyHash]
+    );
+  }
+
+  async updateApiKeyLastUsed(id: string): Promise<void> {
+    await this.execute(
+      'UPDATE api_keys SET last_used_at = ? WHERE id = ?',
+      [new Date().toISOString(), id]
+    );
+  }
+
+  async deleteApiKey(id: string): Promise<boolean> {
+    const result = await this.execute(
+      'DELETE FROM api_keys WHERE id = ?',
+      [id]
+    );
+    return result.success && (result.meta?.changes ?? 0) > 0;
   }
 }
 
 /**
- * Query Builder for more complex queries
+ * Create a database service instance
  */
-class QueryBuilder<T> {
-  private selectFields = '*';
-  private whereConditions: string[] = [];
-  private whereParams: any[] = [];
-  private orderByClause = '';
-  private limitValue?: number;
-  private offsetValue?: number;
-
-  constructor(
-    private db: DatabaseService,
-    private table: string,
-    where?: Record<string, any>,
-  ) {
-    if (where) {
-      this.where(where);
-    }
-  }
-
-  fields(fields: string[]): this {
-    this.selectFields = fields.join(', ');
-    return this;
-  }
-
-  where(conditions: Record<string, any>): this {
-    Object.entries(conditions).forEach(([key, value]) => {
-      this.whereConditions.push(`${key} = ?`);
-      this.whereParams.push(value);
-    });
-    return this;
-  }
-
-  orderBy(field: string, direction: 'ASC' | 'DESC' = 'ASC'): this {
-    this.orderByClause = ` ORDER BY ${field} ${direction}`;
-    return this;
-  }
-
-  limit(limit: number): this {
-    this.limitValue = limit;
-    return this;
-  }
-
-  offset(offset: number): this {
-    this.offsetValue = offset;
-    return this;
-  }
-
-  private buildQuery(): { sql: string; params: any[] } {
-    let sql = `SELECT ${this.selectFields} FROM ${this.table}`;
-
-    if (this.whereConditions.length > 0) {
-      sql += ` WHERE ${this.whereConditions.join(' AND ')}`;
-    }
-
-    sql += this.orderByClause;
-
-    if (this.limitValue !== undefined) {
-      sql += ` LIMIT ${this.limitValue}`;
-    }
-
-    if (this.offsetValue !== undefined) {
-      sql += ` OFFSET ${this.offsetValue}`;
-    }
-
-    return { sql, params: this.whereParams };
-  }
-
-  async all(): Promise<T[]> {
-    const { sql, params } = this.buildQuery();
-    const result = await this.db.query<T>(sql, params);
-    return result.results;
-  }
-
-  async first(): Promise<T | null> {
-    const { sql, params } = this.buildQuery();
-    return await this.db.queryFirst<T>(sql, params);
-  }
-}
-
-/**
- * Helper function to create a database service instance
- */
-export function createDatabaseService(
-  env: Env,
-  config?: DatabaseConfig,
-): DatabaseService {
-  return new DatabaseService(env, config);
+export function createDatabase(env: Env): DatabaseService {
+  return new DatabaseService(env.DB);
 }
