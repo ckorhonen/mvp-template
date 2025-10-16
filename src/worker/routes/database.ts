@@ -1,63 +1,68 @@
 /**
- * D1 Database Routes
- * 
- * Example routes demonstrating D1 database operations.
+ * Database Routes
+ * Handles all database-related API endpoints
  */
 
 import type { Env } from '../types';
 import { createD1Service } from '../services/d1-database';
-import { successResponse, errorResponse, notFoundResponse, serverErrorResponse } from '../utils/response';
-import { parseAndValidateJSON, validateRequired, validateEmail } from '../utils/validation';
-
-interface User {
-  id: number;
-  email: string;
-  name: string;
-  created_at: string;
-}
+import { jsonResponse, errorResponse } from '../utils/response';
 
 /**
  * POST /api/users
  * Create a new user
  */
-export async function handleCreateUser(request: Request, env: Env): Promise<Response> {
+export async function createUser(
+  request: Request,
+  env: Env
+): Promise<Response> {
   try {
-    const body = await parseAndValidateJSON<{
+    const body = await request.json() as {
       email: string;
       name: string;
-    }>(request);
+      metadata?: Record<string, unknown>;
+    };
 
-    const errors = validateRequired(body, ['email', 'name']);
-    if (errors.length > 0) {
-      return errorResponse('Validation failed', { details: errors });
-    }
-
-    if (!validateEmail(body.email)) {
-      return errorResponse('Invalid email format');
+    if (!body.email || !body.name) {
+      return errorResponse('Email and name are required', 400);
     }
 
     const db = createD1Service(env);
-    
-    // Check if user already exists
-    const existing = await db.queryOne<User>(
+
+    // Check if user exists
+    const existing = await db.queryOne(
       'SELECT id FROM users WHERE email = ?',
       [body.email]
     );
 
     if (existing) {
-      return errorResponse('User with this email already exists', { status: 409 });
+      return errorResponse('User already exists', 409);
     }
 
     const userId = await db.insert('users', {
       email: body.email,
       name: body.name,
+      metadata: JSON.stringify(body.metadata || {}),
       created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
     });
 
-    return successResponse({ id: userId }, { status: 201 });
+    const user = await db.queryOne('SELECT * FROM users WHERE id = ?', [
+      userId,
+    ]);
+
+    return jsonResponse(
+      {
+        success: true,
+        data: user,
+      },
+      201
+    );
   } catch (error) {
     console.error('Create user error:', error);
-    return serverErrorResponse('Failed to create user', error as Error);
+    return errorResponse(
+      error instanceof Error ? error.message : 'Failed to create user',
+      500
+    );
   }
 }
 
@@ -65,30 +70,42 @@ export async function handleCreateUser(request: Request, env: Env): Promise<Resp
  * GET /api/users/:id
  * Get a user by ID
  */
-export async function handleGetUser(request: Request, env: Env, userId: string): Promise<Response> {
+export async function getUser(
+  request: Request,
+  env: Env,
+  userId: string
+): Promise<Response> {
   try {
     const db = createD1Service(env);
-    const user = await db.queryOne<User>(
-      'SELECT * FROM users WHERE id = ?',
-      [userId]
-    );
+    const user = await db.queryOne('SELECT * FROM users WHERE id = ?', [
+      userId,
+    ]);
 
     if (!user) {
-      return notFoundResponse('User not found');
+      return errorResponse('User not found', 404);
     }
 
-    return successResponse(user);
+    return jsonResponse({
+      success: true,
+      data: user,
+    });
   } catch (error) {
     console.error('Get user error:', error);
-    return serverErrorResponse('Failed to get user', error as Error);
+    return errorResponse(
+      error instanceof Error ? error.message : 'Failed to get user',
+      500
+    );
   }
 }
 
 /**
  * GET /api/users
- * List all users with pagination
+ * List users with pagination
  */
-export async function handleListUsers(request: Request, env: Env): Promise<Response> {
+export async function listUsers(
+  request: Request,
+  env: Env
+): Promise<Response> {
   try {
     const url = new URL(request.url);
     const page = parseInt(url.searchParams.get('page') || '1', 10);
@@ -96,27 +113,33 @@ export async function handleListUsers(request: Request, env: Env): Promise<Respo
     const offset = (page - 1) * perPage;
 
     const db = createD1Service(env);
-    
-    const [users, totalCount] = await Promise.all([
-      db.query<User>(
-        'SELECT * FROM users ORDER BY created_at DESC LIMIT ? OFFSET ?',
-        [perPage, offset]
-      ),
-      db.count('users'),
-    ]);
 
-    return successResponse({
-      users,
-      pagination: {
-        page,
-        per_page: perPage,
-        total: totalCount,
-        total_pages: Math.ceil(totalCount / perPage),
+    const users = await db.select('users', {
+      orderBy: { column: 'created_at', direction: 'DESC' },
+      limit: perPage,
+      offset,
+    });
+
+    const total = await db.count('users');
+
+    return jsonResponse({
+      success: true,
+      data: {
+        users,
+        pagination: {
+          page,
+          per_page: perPage,
+          total,
+          total_pages: Math.ceil(total / perPage),
+        },
       },
     });
   } catch (error) {
     console.error('List users error:', error);
-    return serverErrorResponse('Failed to list users', error as Error);
+    return errorResponse(
+      error instanceof Error ? error.message : 'Failed to list users',
+      500
+    );
   }
 }
 
@@ -124,36 +147,63 @@ export async function handleListUsers(request: Request, env: Env): Promise<Respo
  * PUT /api/users/:id
  * Update a user
  */
-export async function handleUpdateUser(
+export async function updateUser(
   request: Request,
   env: Env,
   userId: string
 ): Promise<Response> {
   try {
-    const body = await parseAndValidateJSON<{
-      email?: string;
+    const body = await request.json() as {
       name?: string;
-    }>(request);
+      metadata?: Record<string, unknown>;
+    };
 
-    if (body.email && !validateEmail(body.email)) {
-      return errorResponse('Invalid email format');
+    if (!body.name && !body.metadata) {
+      return errorResponse('No update data provided', 400);
     }
 
     const db = createD1Service(env);
-    
-    const updated = await db.update('users', body, {
+
+    // Check if user exists
+    const existing = await db.queryOne('SELECT id FROM users WHERE id = ?', [
+      userId,
+    ]);
+
+    if (!existing) {
+      return errorResponse('User not found', 404);
+    }
+
+    const updateData: Record<string, string> = {
+      updated_at: new Date().toISOString(),
+    };
+
+    if (body.name) {
+      updateData.name = body.name;
+    }
+
+    if (body.metadata) {
+      updateData.metadata = JSON.stringify(body.metadata);
+    }
+
+    await db.update('users', updateData, {
       column: 'id',
       value: userId,
     });
 
-    if (updated === 0) {
-      return notFoundResponse('User not found');
-    }
+    const user = await db.queryOne('SELECT * FROM users WHERE id = ?', [
+      userId,
+    ]);
 
-    return successResponse({ updated: true });
+    return jsonResponse({
+      success: true,
+      data: user,
+    });
   } catch (error) {
     console.error('Update user error:', error);
-    return serverErrorResponse('Failed to update user', error as Error);
+    return errorResponse(
+      error instanceof Error ? error.message : 'Failed to update user',
+      500
+    );
   }
 }
 
@@ -161,26 +211,37 @@ export async function handleUpdateUser(
  * DELETE /api/users/:id
  * Delete a user
  */
-export async function handleDeleteUser(
+export async function deleteUser(
   request: Request,
   env: Env,
   userId: string
 ): Promise<Response> {
   try {
     const db = createD1Service(env);
-    
-    const deleted = await db.delete('users', {
+
+    // Check if user exists
+    const existing = await db.queryOne('SELECT id FROM users WHERE id = ?', [
+      userId,
+    ]);
+
+    if (!existing) {
+      return errorResponse('User not found', 404);
+    }
+
+    await db.delete('users', {
       column: 'id',
       value: userId,
     });
 
-    if (deleted === 0) {
-      return notFoundResponse('User not found');
-    }
-
-    return successResponse({ deleted: true });
+    return jsonResponse({
+      success: true,
+      message: 'User deleted successfully',
+    });
   } catch (error) {
     console.error('Delete user error:', error);
-    return serverErrorResponse('Failed to delete user', error as Error);
+    return errorResponse(
+      error instanceof Error ? error.message : 'Failed to delete user',
+      500
+    );
   }
 }

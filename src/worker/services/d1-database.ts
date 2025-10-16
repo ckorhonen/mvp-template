@@ -1,197 +1,267 @@
 /**
  * D1 Database Service
- * 
- * Type-safe wrapper for Cloudflare D1 database operations.
- * Includes query builders, transactions, and error handling.
+ * Provides type-safe database operations for Cloudflare D1
  */
 
 import type { Env } from '../types';
 
-export interface D1QueryResult<T = unknown> {
+export interface QueryResult<T = unknown> {
+  results: T[];
   success: boolean;
-  meta: {
+  meta?: {
     duration: number;
     rows_read: number;
     rows_written: number;
   };
-  results: T[];
 }
 
-export interface D1ExecResult {
-  count: number;
-  duration: number;
+export interface WhereClause {
+  column: string;
+  operator?: '=' | '!=' | '>' | '<' | '>=' | '<=' | 'LIKE' | 'IN';
+  value: string | number | boolean | null | (string | number)[];
 }
 
 export class D1DatabaseService {
-  constructor(private db: D1Database) {}
+  private db: D1Database;
+  private env: Env;
+
+  constructor(env: Env) {
+    this.env = env;
+    this.db = env.DB;
+  }
 
   /**
    * Execute a raw SQL query
    */
-  async query<T = unknown>(sql: string, params: unknown[] = []): Promise<T[]> {
+  async query<T = unknown>(
+    sql: string,
+    params: (string | number | boolean | null)[] = []
+  ): Promise<T[]> {
     try {
       const result = await this.db.prepare(sql).bind(...params).all();
+
+      if (!result.success) {
+        throw new Error('Database query failed');
+      }
+
       return result.results as T[];
     } catch (error) {
-      throw new Error(`D1 query failed: ${error}`);
+      console.error('Database query error:', error);
+      throw error;
     }
   }
 
   /**
-   * Execute a query and return the first result
+   * Execute a single query and return first result
    */
-  async queryOne<T = unknown>(sql: string, params: unknown[] = []): Promise<T | null> {
-    try {
-      const result = await this.db.prepare(sql).bind(...params).first();
-      return result as T | null;
-    } catch (error) {
-      throw new Error(`D1 query failed: ${error}`);
-    }
+  async queryOne<T = unknown>(
+    sql: string,
+    params: (string | number | boolean | null)[] = []
+  ): Promise<T | null> {
+    const results = await this.query<T>(sql, params);
+    return results[0] || null;
   }
 
   /**
-   * Execute a query that modifies data (INSERT, UPDATE, DELETE)
+   * Execute a query without returning results (INSERT, UPDATE, DELETE)
    */
-  async execute(sql: string, params: unknown[] = []): Promise<D1ExecResult> {
+  async execute(
+    sql: string,
+    params: (string | number | boolean | null)[] = []
+  ): Promise<{ success: boolean; meta?: Record<string, unknown> }> {
     try {
       const result = await this.db.prepare(sql).bind(...params).run();
       return {
-        count: result.meta.rows_written || 0,
-        duration: result.meta.duration || 0,
+        success: result.success,
+        meta: result.meta,
       };
     } catch (error) {
-      throw new Error(`D1 execution failed: ${error}`);
+      console.error('Database execute error:', error);
+      throw error;
     }
   }
 
   /**
-   * Execute multiple statements in a batch
+   * Insert a record into a table
    */
-  async batch<T = unknown>(statements: { sql: string; params?: unknown[] }[]): Promise<D1QueryResult<T>[]> {
-    try {
-      const prepared = statements.map(({ sql, params = [] }) =>
-        this.db.prepare(sql).bind(...params)
-      );
-      const results = await this.db.batch(prepared);
-      return results as D1QueryResult<T>[];
-    } catch (error) {
-      throw new Error(`D1 batch execution failed: ${error}`);
-    }
-  }
-
-  /**
-   * Insert a record and return the inserted ID
-   */
-  async insert(table: string, data: Record<string, unknown>): Promise<number> {
-    const keys = Object.keys(data);
+  async insert(
+    table: string,
+    data: Record<string, string | number | boolean | null>
+  ): Promise<number> {
+    const columns = Object.keys(data);
     const values = Object.values(data);
-    const placeholders = keys.map(() => '?').join(', ');
-    
-    const sql = `INSERT INTO ${table} (${keys.join(', ')}) VALUES (${placeholders})`;
+    const placeholders = columns.map(() => '?').join(', ');
+
+    const sql = `
+      INSERT INTO ${table} (${columns.join(', ')})
+      VALUES (${placeholders})
+    `;
+
     const result = await this.db.prepare(sql).bind(...values).run();
-    
-    return result.meta.last_row_id || 0;
+
+    if (!result.success) {
+      throw new Error('Failed to insert record');
+    }
+
+    // Return the last inserted ID
+    return result.meta?.last_row_id as number;
   }
 
   /**
-   * Update records
+   * Update records in a table
    */
   async update(
     table: string,
-    data: Record<string, unknown>,
-    where: { column: string; value: unknown }
+    data: Record<string, string | number | boolean | null>,
+    where: WhereClause
   ): Promise<number> {
-    const keys = Object.keys(data);
-    const values = Object.values(data);
-    const setClause = keys.map(key => `${key} = ?`).join(', ');
-    
-    const sql = `UPDATE ${table} SET ${setClause} WHERE ${where.column} = ?`;
-    const result = await this.db.prepare(sql).bind(...values, where.value).run();
-    
-    return result.meta.rows_written || 0;
-  }
+    const updates = Object.keys(data)
+      .map((key) => `${key} = ?`)
+      .join(', ');
+    const values = [...Object.values(data), where.value];
 
-  /**
-   * Delete records
-   */
-  async delete(table: string, where: { column: string; value: unknown }): Promise<number> {
-    const sql = `DELETE FROM ${table} WHERE ${where.column} = ?`;
-    const result = await this.db.prepare(sql).bind(where.value).run();
-    
-    return result.meta.rows_written || 0;
-  }
+    const operator = where.operator || '=';
+    const sql = `
+      UPDATE ${table}
+      SET ${updates}
+      WHERE ${where.column} ${operator} ?
+    `;
 
-  /**
-   * Check if a record exists
-   */
-  async exists(table: string, where: { column: string; value: unknown }): Promise<boolean> {
-    const sql = `SELECT 1 FROM ${table} WHERE ${where.column} = ? LIMIT 1`;
-    const result = await this.db.prepare(sql).bind(where.value).first();
-    return result !== null;
-  }
+    const result = await this.db.prepare(sql).bind(...values).run();
 
-  /**
-   * Count records
-   */
-  async count(table: string, where?: { column: string; value: unknown }): Promise<number> {
-    let sql = `SELECT COUNT(*) as count FROM ${table}`;
-    const params: unknown[] = [];
-    
-    if (where) {
-      sql += ` WHERE ${where.column} = ?`;
-      params.push(where.value);
+    if (!result.success) {
+      throw new Error('Failed to update record');
     }
-    
+
+    return result.meta?.changes as number;
+  }
+
+  /**
+   * Delete records from a table
+   */
+  async delete(table: string, where: WhereClause): Promise<number> {
+    const operator = where.operator || '=';
+    const sql = `
+      DELETE FROM ${table}
+      WHERE ${where.column} ${operator} ?
+    `;
+
+    const result = await this.db.prepare(sql).bind(where.value).run();
+
+    if (!result.success) {
+      throw new Error('Failed to delete record');
+    }
+
+    return result.meta?.changes as number;
+  }
+
+  /**
+   * Select records with pagination
+   */
+  async select<T = unknown>(
+    table: string,
+    options?: {
+      columns?: string[];
+      where?: WhereClause[];
+      orderBy?: { column: string; direction: 'ASC' | 'DESC' };
+      limit?: number;
+      offset?: number;
+    }
+  ): Promise<T[]> {
+    const columns = options?.columns?.join(', ') || '*';
+    let sql = `SELECT ${columns} FROM ${table}`;
+    const params: (string | number | boolean | null)[] = [];
+
+    // Add WHERE clauses
+    if (options?.where && options.where.length > 0) {
+      const whereClauses = options.where.map((w) => {
+        const operator = w.operator || '=';
+        if (operator === 'IN' && Array.isArray(w.value)) {
+          const placeholders = w.value.map(() => '?').join(', ');
+          params.push(...w.value);
+          return `${w.column} IN (${placeholders})`;
+        }
+        params.push(w.value as string | number | boolean | null);
+        return `${w.column} ${operator} ?`;
+      });
+      sql += ` WHERE ${whereClauses.join(' AND ')}`;
+    }
+
+    // Add ORDER BY
+    if (options?.orderBy) {
+      sql += ` ORDER BY ${options.orderBy.column} ${options.orderBy.direction}`;
+    }
+
+    // Add LIMIT and OFFSET
+    if (options?.limit) {
+      sql += ` LIMIT ${options.limit}`;
+    }
+    if (options?.offset) {
+      sql += ` OFFSET ${options.offset}`;
+    }
+
+    return this.query<T>(sql, params);
+  }
+
+  /**
+   * Count records in a table
+   */
+  async count(
+    table: string,
+    where?: WhereClause[]
+  ): Promise<number> {
+    let sql = `SELECT COUNT(*) as count FROM ${table}`;
+    const params: (string | number | boolean | null)[] = [];
+
+    if (where && where.length > 0) {
+      const whereClauses = where.map((w) => {
+        const operator = w.operator || '=';
+        params.push(w.value as string | number | boolean | null);
+        return `${w.column} ${operator} ?`;
+      });
+      sql += ` WHERE ${whereClauses.join(' AND ')}`;
+    }
+
     const result = await this.queryOne<{ count: number }>(sql, params);
     return result?.count || 0;
   }
+
+  /**
+   * Execute multiple queries in a transaction
+   */
+  async transaction(
+    queries: Array<{
+      sql: string;
+      params?: (string | number | boolean | null)[];
+    }>
+  ): Promise<void> {
+    try {
+      const statements = queries.map((q) =>
+        this.db.prepare(q.sql).bind(...(q.params || []))
+      );
+
+      await this.db.batch(statements);
+    } catch (error) {
+      console.error('Transaction error:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Check if a table exists
+   */
+  async tableExists(tableName: string): Promise<boolean> {
+    const result = await this.queryOne<{ name: string }>(
+      `SELECT name FROM sqlite_master WHERE type='table' AND name=?`,
+      [tableName]
+    );
+    return result !== null;
+  }
 }
 
 /**
- * Create a D1 database service instance from environment
+ * Factory function to create D1 database service
  */
 export function createD1Service(env: Env): D1DatabaseService {
-  return new D1DatabaseService(env.DB);
+  return new D1DatabaseService(env);
 }
-
-/**
- * Example models and queries
- */
-export const D1Examples = {
-  // Create a user
-  async createUser(db: D1DatabaseService, email: string, name: string) {
-    const userId = await db.insert('users', {
-      email,
-      name,
-      created_at: new Date().toISOString(),
-    });
-    return userId;
-  },
-
-  // Get user by email
-  async getUserByEmail(db: D1DatabaseService, email: string) {
-    return await db.queryOne(
-      'SELECT * FROM users WHERE email = ?',
-      [email]
-    );
-  },
-
-  // Update user
-  async updateUser(db: D1DatabaseService, userId: number, data: Record<string, unknown>) {
-    return await db.update('users', data, { column: 'id', value: userId });
-  },
-
-  // List users with pagination
-  async listUsers(db: D1DatabaseService, page: number = 1, perPage: number = 10) {
-    const offset = (page - 1) * perPage;
-    return await db.query(
-      'SELECT * FROM users ORDER BY created_at DESC LIMIT ? OFFSET ?',
-      [perPage, offset]
-    );
-  },
-
-  // Delete user
-  async deleteUser(db: D1DatabaseService, userId: number) {
-    return await db.delete('users', { column: 'id', value: userId });
-  },
-};
