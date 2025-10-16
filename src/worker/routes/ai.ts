@@ -1,195 +1,127 @@
 /**
- * AI Gateway API Routes
- * Examples of using Cloudflare AI Gateway with OpenAI
+ * AI Gateway route examples
+ * Demonstrates OpenAI integration through Cloudflare AI Gateway
  */
 
-import { Env } from '../types';
-import { successResponse, errorResponse, ErrorResponses } from '../utils/response';
-import { parseJsonBody, validateRequiredFields } from '../utils/validation';
-import { createOpenAIClient } from '../utils/ai';
-import { createLogger } from '../utils/logger';
+import { z } from 'zod';
+import type { Env } from '../types';
+import { jsonResponse, errorResponse, streamResponse, errorResponses } from '../utils/response';
+import { validateBody } from '../utils/validation';
+import { createAIGatewayClient } from '../utils/ai-gateway';
+import { toApiError } from '../utils/errors';
 
 /**
- * POST /api/ai/chat
- * Chat completion endpoint
+ * Request schema for chat completion
  */
-export async function handleChatCompletion(
-  request: Request,
-  env: Env,
-  requestId?: string
-): Promise<Response> {
-  const logger = createLogger(env, 'ai-chat');
-  const origin = request.headers.get('Origin') || undefined;
-
-  try {
-    // Parse request body
-    const body = await parseJsonBody<{
-      message: string;
-      systemPrompt?: string;
-      model?: string;
-      temperature?: number;
-    }>(request);
-
-    // Validate required fields
-    const validation = validateRequiredFields(body, ['message']);
-    if (!validation.valid) {
-      return ErrorResponses.badRequest(
-        `Missing required fields: ${validation.missing.join(', ')}`,
-        requestId,
-        origin,
-        env.CORS_ALLOWED_ORIGINS
-      );
-    }
-
-    logger.info('Processing chat completion request', { messageLength: body.message.length });
-
-    // Create OpenAI client
-    const client = createOpenAIClient(env);
-
-    // Generate response
-    const response = await client.chat(
-      body.message,
-      body.systemPrompt,
-      body.model || 'gpt-4o-mini',
-      body.temperature || 0.7
-    );
-
-    logger.info('Chat completion successful');
-
-    return successResponse(
-      { response },
-      200,
-      requestId,
-      origin,
-      env.CORS_ALLOWED_ORIGINS
-    );
-  } catch (error: any) {
-    logger.error('Chat completion error', error);
-    return ErrorResponses.internalError(
-      'Failed to generate chat completion',
-      error.message,
-      requestId,
-      origin,
-      env.CORS_ALLOWED_ORIGINS
-    );
-  }
-}
+const chatCompletionSchema = z.object({
+  messages: z.array(z.object({
+    role: z.enum(['system', 'user', 'assistant']),
+    content: z.string(),
+  })),
+  model: z.string().default('gpt-3.5-turbo'),
+  temperature: z.number().min(0).max(2).default(0.7),
+  max_tokens: z.number().int().positive().max(4000).optional(),
+  stream: z.boolean().default(false),
+});
 
 /**
- * POST /api/ai/embed
- * Text embedding endpoint
+ * Simple completion schema
  */
-export async function handleEmbedding(
-  request: Request,
-  env: Env,
-  requestId?: string
-): Promise<Response> {
-  const logger = createLogger(env, 'ai-embed');
-  const origin = request.headers.get('Origin') || undefined;
-
-  try {
-    const body = await parseJsonBody<{
-      text: string | string[];
-      model?: string;
-    }>(request);
-
-    const validation = validateRequiredFields(body, ['text']);
-    if (!validation.valid) {
-      return ErrorResponses.badRequest(
-        `Missing required fields: ${validation.missing.join(', ')}`,
-        requestId,
-        origin,
-        env.CORS_ALLOWED_ORIGINS
-      );
-    }
-
-    logger.info('Processing embedding request');
-
-    const client = createOpenAIClient(env);
-    const embeddings = await client.embed(body.text, body.model);
-
-    logger.info('Embedding generation successful');
-
-    return successResponse(
-      { embeddings },
-      200,
-      requestId,
-      origin,
-      env.CORS_ALLOWED_ORIGINS
-    );
-  } catch (error: any) {
-    logger.error('Embedding error', error);
-    return ErrorResponses.internalError(
-      'Failed to generate embeddings',
-      error.message,
-      requestId,
-      origin,
-      env.CORS_ALLOWED_ORIGINS
-    );
-  }
-}
+const simpleCompletionSchema = z.object({
+  prompt: z.string().min(1, 'Prompt cannot be empty'),
+  system_prompt: z.string().optional(),
+  model: z.string().default('gpt-3.5-turbo'),
+  temperature: z.number().min(0).max(2).default(0.7),
+  max_tokens: z.number().int().positive().max(4000).default(500),
+  cache: z.boolean().default(true),
+});
 
 /**
- * POST /api/ai/stream
- * Streaming chat completion endpoint
+ * POST /api/ai/chat - Create chat completion
  */
-export async function handleStreamingChat(
-  request: Request,
-  env: Env,
-  requestId?: string
-): Promise<Response> {
-  const logger = createLogger(env, 'ai-stream');
-  const origin = request.headers.get('Origin') || undefined;
-
+export async function handleChatCompletion(request: Request, env: Env): Promise<Response> {
   try {
-    const body = await parseJsonBody<{
-      message: string;
-      systemPrompt?: string;
-      model?: string;
-    }>(request);
-
-    const validation = validateRequiredFields(body, ['message']);
-    if (!validation.valid) {
-      return ErrorResponses.badRequest(
-        `Missing required fields: ${validation.missing.join(', ')}`,
-        requestId,
-        origin,
-        env.CORS_ALLOWED_ORIGINS
-      );
+    // Validate request body
+    const validation = await validateBody(request, chatCompletionSchema);
+    if (!validation.success) {
+      return errorResponses.badRequest('Invalid request', { errors: validation.error });
     }
 
-    logger.info('Processing streaming chat request');
+    const { messages, model, temperature, max_tokens, stream } = validation.data;
 
-    const client = createOpenAIClient(env);
-    const messages: any[] = [];
+    // Create AI Gateway client
+    const aiClient = createAIGatewayClient(env);
 
-    if (body.systemPrompt) {
-      messages.push({ role: 'system', content: body.systemPrompt });
+    // Handle streaming response
+    if (stream) {
+      const streamBody = await aiClient.createStreamingChatCompletion({
+        model,
+        messages,
+        temperature,
+        max_tokens,
+      });
+
+      return streamResponse(streamBody);
     }
-    messages.push({ role: 'user', content: body.message });
 
-    const stream = await client.chatCompletionStream({
-      model: body.model || 'gpt-4o-mini',
-      messages,
-      stream: true,
-    });
-
-    return new Response(stream, {
-      headers: {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive',
-        'Access-Control-Allow-Origin': origin || '*',
+    // Handle standard response
+    const completion = await aiClient.createChatCompletion(
+      {
+        model,
+        messages,
+        temperature,
+        max_tokens,
       },
-    });
-  } catch (error: any) {
-    logger.error('Streaming chat error', error);
-    return ErrorResponses.internalError(
-      'Failed to start streaming',
-      error.message,
-      requestId,
-      origin,
-      env.CORS_ALLOWED_ORIGINS
+      { cache: true, cacheTtl: 3600 }
     );
+
+    return jsonResponse({
+      message: completion.choices[0]?.message?.content || '',
+      usage: completion.usage,
+      model: completion.model,
+    });
+  } catch (error) {
+    const apiError = toApiError(error);
+    return errorResponse(apiError.message, apiError.statusCode, apiError.code, apiError.details);
   }
+}
+
+/**
+ * POST /api/ai/complete - Simple text completion
+ */
+export async function handleSimpleCompletion(request: Request, env: Env): Promise<Response> {
+  try {
+    const validation = await validateBody(request, simpleCompletionSchema);
+    if (!validation.success) {
+      return errorResponses.badRequest('Invalid request', { errors: validation.error });
+    }
+
+    const { prompt, system_prompt, model, temperature, max_tokens, cache } = validation.data;
+
+    const aiClient = createAIGatewayClient(env);
+    const response = await aiClient.complete(prompt, system_prompt, {
+      model,
+      temperature,
+      maxTokens: max_tokens,
+      cache,
+    });
+
+    return jsonResponse({ text: response });
+  } catch (error) {
+    const apiError = toApiError(error);
+    return errorResponse(apiError.message, apiError.statusCode, apiError.code, apiError.details);
+  }
+}
+
+/**
+ * GET /api/ai/models - List available models
+ */
+export async function handleListModels(): Promise<Response> {
+  const models = [
+    { id: 'gpt-4', name: 'GPT-4', description: 'Most capable model' },
+    { id: 'gpt-4-turbo-preview', name: 'GPT-4 Turbo', description: 'Latest GPT-4 with improved performance' },
+    { id: 'gpt-3.5-turbo', name: 'GPT-3.5 Turbo', description: 'Fast and efficient' },
+  ];
+
+  return jsonResponse({ models });
 }

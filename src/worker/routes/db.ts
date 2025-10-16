@@ -1,352 +1,219 @@
 /**
- * D1 Database API Routes
- * CRUD operations for items using D1
+ * D1 Database route examples
+ * Demonstrates CRUD operations with Cloudflare D1
  */
 
-import { Env, Item } from '../types';
-import { DbItem } from '../types/d1';
-import { successResponse, errorResponse, ErrorResponses } from '../utils/response';
-import { parseJsonBody, validateRequiredFields, parsePaginationParams } from '../utils/validation';
-import { insert, update, find, findById, deleteRecords, count } from '../utils/db';
-import { createLogger } from '../utils/logger';
+import { z } from 'zod';
+import type { Env } from '../types';
+import { jsonResponse, errorResponses } from '../utils/response';
+import { validateBody, validateQuery, schemas } from '../utils/validation';
+import { NotFoundError, toApiError } from '../utils/errors';
 
 /**
- * GET /api/db/items
- * List items with pagination
+ * Example user schema
  */
-export async function handleListItems(
-  request: Request,
-  env: Env,
-  requestId?: string
-): Promise<Response> {
-  const logger = createLogger(env, 'db-list');
-  const origin = request.headers.get('Origin') || undefined;
+const createUserSchema = z.object({
+  email: schemas.email,
+  name: z.string().min(1, 'Name is required'),
+  role: z.enum(['user', 'admin']).default('user'),
+});
 
+const updateUserSchema = z.object({
+  email: schemas.email.optional(),
+  name: z.string().min(1).optional(),
+  role: z.enum(['user', 'admin']).optional(),
+});
+
+const listUsersQuerySchema = z.object({
+  page: z.coerce.number().int().positive().default(1),
+  limit: z.coerce.number().int().positive().max(100).default(20),
+  role: z.enum(['user', 'admin']).optional(),
+});
+
+/**
+ * POST /api/db/users - Create a new user
+ */
+export async function handleCreateUser(request: Request, env: Env): Promise<Response> {
+  try {
+    const validation = await validateBody(request, createUserSchema);
+    if (!validation.success) {
+      return errorResponses.badRequest('Invalid request', { errors: validation.error });
+    }
+
+    const { email, name, role } = validation.data;
+
+    // Insert user into D1 database
+    const result = await env.DB.prepare(
+      'INSERT INTO users (email, name, role, created_at) VALUES (?, ?, ?, ?);'
+    )
+      .bind(email, name, role, new Date().toISOString())
+      .run();
+
+    if (!result.success) {
+      throw new Error('Failed to create user');
+    }
+
+    // Fetch the created user
+    const user = await env.DB.prepare('SELECT * FROM users WHERE id = ?;')
+      .bind(result.meta.last_row_id)
+      .first();
+
+    return jsonResponse(user, 201);
+  } catch (error) {
+    const apiError = toApiError(error);
+    return errorResponses.internalError(apiError.message, apiError.details);
+  }
+}
+
+/**
+ * GET /api/db/users - List all users with pagination
+ */
+export async function handleListUsers(request: Request, env: Env): Promise<Response> {
   try {
     const url = new URL(request.url);
-    const { page, limit, offset } = parsePaginationParams(url);
-    const status = url.searchParams.get('status');
-
-    logger.info('Listing items', { page, limit, status });
-
-    // Build where conditions
-    const where: any[] = [{ field: 'deleted_at', operator: '=', value: null }];
-    if (status) {
-      where.push({ field: 'status', operator: '=', value: status });
+    const validation = validateQuery(url, listUsersQuerySchema);
+    
+    if (!validation.success) {
+      return errorResponses.badRequest('Invalid query parameters', { errors: validation.error });
     }
 
-    // Get items and total count
-    const [items, total] = await Promise.all([
-      find<DbItem>(env.DB, 'items', where, { field: 'created_at', direction: 'DESC' }, limit, offset),
-      count(env.DB, 'items', where),
-    ]);
+    const { page, limit, role } = validation.data;
+    const offset = (page - 1) * limit;
 
-    // Transform database items to API format
-    const transformedItems: Item[] = items.map(item => ({
-      id: item.id,
-      userId: item.user_id,
-      title: item.title,
-      description: item.description || undefined,
-      status: item.status as any,
-      tags: item.tags ? JSON.parse(item.tags) : undefined,
-      metadata: item.metadata ? JSON.parse(item.metadata) : undefined,
-      createdAt: item.created_at,
-      updatedAt: item.updated_at,
-    }));
+    // Build query
+    let query = 'SELECT * FROM users';
+    const params: unknown[] = [];
 
-    return successResponse(
-      transformedItems,
-      200,
-      requestId,
-      origin,
-      env.CORS_ALLOWED_ORIGINS
-    );
-  } catch (error: any) {
-    logger.error('List items error', error);
-    return ErrorResponses.internalError(
-      'Failed to list items',
-      error.message,
-      requestId,
-      origin,
-      env.CORS_ALLOWED_ORIGINS
-    );
+    if (role) {
+      query += ' WHERE role = ?';
+      params.push(role);
+    }
+
+    query += ' ORDER BY created_at DESC LIMIT ? OFFSET ?';
+    params.push(limit, offset);
+
+    // Execute query
+    const { results } = await env.DB.prepare(query).bind(...params).all();
+
+    // Get total count
+    let countQuery = 'SELECT COUNT(*) as total FROM users';
+    if (role) {
+      countQuery += ' WHERE role = ?';
+    }
+    const countResult = await env.DB.prepare(countQuery)
+      .bind(...(role ? [role] : []))
+      .first();
+
+    const total = (countResult as { total: number })?.total || 0;
+
+    return jsonResponse({
+      users: results,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+    });
+  } catch (error) {
+    const apiError = toApiError(error);
+    return errorResponses.internalError(apiError.message, apiError.details);
   }
 }
 
 /**
- * GET /api/db/items/:id
- * Get a single item by ID
+ * GET /api/db/users/:id - Get user by ID
  */
-export async function handleGetItem(
-  request: Request,
-  env: Env,
-  itemId: string,
-  requestId?: string
-): Promise<Response> {
-  const logger = createLogger(env, 'db-get');
-  const origin = request.headers.get('Origin') || undefined;
-
+export async function handleGetUser(userId: string, env: Env): Promise<Response> {
   try {
-    const id = parseInt(itemId, 10);
-    if (isNaN(id)) {
-      return ErrorResponses.badRequest(
-        'Invalid item ID',
-        requestId,
-        origin,
-        env.CORS_ALLOWED_ORIGINS
-      );
+    const user = await env.DB.prepare('SELECT * FROM users WHERE id = ?;')
+      .bind(userId)
+      .first();
+
+    if (!user) {
+      throw new NotFoundError('User');
     }
 
-    logger.info('Getting item', { id });
-
-    const item = await findById<DbItem>(env.DB, 'items', id);
-
-    if (!item || item.deleted_at) {
-      return ErrorResponses.notFound(
-        'Item not found',
-        requestId,
-        origin,
-        env.CORS_ALLOWED_ORIGINS
-      );
-    }
-
-    const transformedItem: Item = {
-      id: item.id,
-      userId: item.user_id,
-      title: item.title,
-      description: item.description || undefined,
-      status: item.status as any,
-      tags: item.tags ? JSON.parse(item.tags) : undefined,
-      metadata: item.metadata ? JSON.parse(item.metadata) : undefined,
-      createdAt: item.created_at,
-      updatedAt: item.updated_at,
-    };
-
-    return successResponse(
-      transformedItem,
-      200,
-      requestId,
-      origin,
-      env.CORS_ALLOWED_ORIGINS
-    );
-  } catch (error: any) {
-    logger.error('Get item error', error);
-    return ErrorResponses.internalError(
-      'Failed to get item',
-      error.message,
-      requestId,
-      origin,
-      env.CORS_ALLOWED_ORIGINS
-    );
+    return jsonResponse(user);
+  } catch (error) {
+    const apiError = toApiError(error);
+    return errorResponses.notFound(apiError.message);
   }
 }
 
 /**
- * POST /api/db/items
- * Create a new item
+ * PUT /api/db/users/:id - Update user
  */
-export async function handleCreateItem(
+export async function handleUpdateUser(
+  userId: string,
   request: Request,
-  env: Env,
-  requestId?: string
+  env: Env
 ): Promise<Response> {
-  const logger = createLogger(env, 'db-create');
-  const origin = request.headers.get('Origin') || undefined;
-
   try {
-    const body = await parseJsonBody<{
-      userId: number;
-      title: string;
-      description?: string;
-      status?: string;
-      tags?: string[];
-      metadata?: Record<string, any>;
-    }>(request);
-
-    const validation = validateRequiredFields(body, ['userId', 'title']);
-    if (!validation.valid) {
-      return ErrorResponses.badRequest(
-        `Missing required fields: ${validation.missing.join(', ')}`,
-        requestId,
-        origin,
-        env.CORS_ALLOWED_ORIGINS
-      );
+    const validation = await validateBody(request, updateUserSchema);
+    if (!validation.success) {
+      return errorResponses.badRequest('Invalid request', { errors: validation.error });
     }
 
-    logger.info('Creating item', { title: body.title });
+    const updates = validation.data;
+    const fields: string[] = [];
+    const values: unknown[] = [];
 
-    const now = Math.floor(Date.now() / 1000);
-    const itemId = await insert(env.DB, 'items', {
-      user_id: body.userId,
-      title: body.title,
-      description: body.description || null,
-      status: body.status || 'active',
-      tags: body.tags ? JSON.stringify(body.tags) : null,
-      metadata: body.metadata ? JSON.stringify(body.metadata) : null,
-      created_at: now,
-      updated_at: now,
+    // Build dynamic UPDATE query
+    Object.entries(updates).forEach(([key, value]) => {
+      if (value !== undefined) {
+        fields.push(`${key} = ?`);
+        values.push(value);
+      }
     });
 
-    logger.info('Item created', { id: itemId });
+    if (fields.length === 0) {
+      return errorResponses.badRequest('No fields to update');
+    }
 
-    return successResponse(
-      { id: itemId },
-      201,
-      requestId,
-      origin,
-      env.CORS_ALLOWED_ORIGINS
-    );
-  } catch (error: any) {
-    logger.error('Create item error', error);
-    return ErrorResponses.internalError(
-      'Failed to create item',
-      error.message,
-      requestId,
-      origin,
-      env.CORS_ALLOWED_ORIGINS
-    );
+    // Add updated_at timestamp
+    fields.push('updated_at = ?');
+    values.push(new Date().toISOString());
+    values.push(userId);
+
+    const result = await env.DB.prepare(
+      `UPDATE users SET ${fields.join(', ')} WHERE id = ?;`
+    )
+      .bind(...values)
+      .run();
+
+    if (!result.success || result.meta.changes === 0) {
+      throw new NotFoundError('User');
+    }
+
+    // Fetch updated user
+    const user = await env.DB.prepare('SELECT * FROM users WHERE id = ?;')
+      .bind(userId)
+      .first();
+
+    return jsonResponse(user);
+  } catch (error) {
+    const apiError = toApiError(error);
+    return errorResponses.internalError(apiError.message, apiError.details);
   }
 }
 
 /**
- * PUT /api/db/items/:id
- * Update an existing item
+ * DELETE /api/db/users/:id - Delete user
  */
-export async function handleUpdateItem(
-  request: Request,
-  env: Env,
-  itemId: string,
-  requestId?: string
-): Promise<Response> {
-  const logger = createLogger(env, 'db-update');
-  const origin = request.headers.get('Origin') || undefined;
-
+export async function handleDeleteUser(userId: string, env: Env): Promise<Response> {
   try {
-    const id = parseInt(itemId, 10);
-    if (isNaN(id)) {
-      return ErrorResponses.badRequest(
-        'Invalid item ID',
-        requestId,
-        origin,
-        env.CORS_ALLOWED_ORIGINS
-      );
+    const result = await env.DB.prepare('DELETE FROM users WHERE id = ?;')
+      .bind(userId)
+      .run();
+
+    if (!result.success || result.meta.changes === 0) {
+      throw new NotFoundError('User');
     }
 
-    const body = await parseJsonBody<{
-      title?: string;
-      description?: string;
-      status?: string;
-      tags?: string[];
-      metadata?: Record<string, any>;
-    }>(request);
-
-    logger.info('Updating item', { id });
-
-    // Check if item exists
-    const existing = await findById<DbItem>(env.DB, 'items', id);
-    if (!existing || existing.deleted_at) {
-      return ErrorResponses.notFound(
-        'Item not found',
-        requestId,
-        origin,
-        env.CORS_ALLOWED_ORIGINS
-      );
-    }
-
-    // Build update data
-    const updateData: any = {
-      updated_at: Math.floor(Date.now() / 1000),
-    };
-
-    if (body.title !== undefined) updateData.title = body.title;
-    if (body.description !== undefined) updateData.description = body.description;
-    if (body.status !== undefined) updateData.status = body.status;
-    if (body.tags !== undefined) updateData.tags = JSON.stringify(body.tags);
-    if (body.metadata !== undefined) updateData.metadata = JSON.stringify(body.metadata);
-
-    await update(env.DB, 'items', updateData, [{ field: 'id', operator: '=', value: id }]);
-
-    logger.info('Item updated', { id });
-
-    return successResponse(
-      { id },
-      200,
-      requestId,
-      origin,
-      env.CORS_ALLOWED_ORIGINS
-    );
-  } catch (error: any) {
-    logger.error('Update item error', error);
-    return ErrorResponses.internalError(
-      'Failed to update item',
-      error.message,
-      requestId,
-      origin,
-      env.CORS_ALLOWED_ORIGINS
-    );
-  }
-}
-
-/**
- * DELETE /api/db/items/:id
- * Delete an item (soft delete)
- */
-export async function handleDeleteItem(
-  request: Request,
-  env: Env,
-  itemId: string,
-  requestId?: string
-): Promise<Response> {
-  const logger = createLogger(env, 'db-delete');
-  const origin = request.headers.get('Origin') || undefined;
-
-  try {
-    const id = parseInt(itemId, 10);
-    if (isNaN(id)) {
-      return ErrorResponses.badRequest(
-        'Invalid item ID',
-        requestId,
-        origin,
-        env.CORS_ALLOWED_ORIGINS
-      );
-    }
-
-    logger.info('Deleting item', { id });
-
-    const now = Math.floor(Date.now() / 1000);
-    const changes = await update(
-      env.DB,
-      'items',
-      { deleted_at: now },
-      [{ field: 'id', operator: '=', value: id }]
-    );
-
-    if (changes === 0) {
-      return ErrorResponses.notFound(
-        'Item not found',
-        requestId,
-        origin,
-        env.CORS_ALLOWED_ORIGINS
-      );
-    }
-
-    logger.info('Item deleted', { id });
-
-    return successResponse(
-      { id },
-      200,
-      requestId,
-      origin,
-      env.CORS_ALLOWED_ORIGINS
-    );
-  } catch (error: any) {
-    logger.error('Delete item error', error);
-    return ErrorResponses.internalError(
-      'Failed to delete item',
-      error.message,
-      requestId,
-      origin,
-      env.CORS_ALLOWED_ORIGINS
-    );
+    return jsonResponse({ message: 'User deleted successfully' });
+  } catch (error) {
+    const apiError = toApiError(error);
+    return errorResponses.notFound(apiError.message);
   }
 }
