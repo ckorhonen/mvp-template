@@ -2,23 +2,29 @@ name: CI/CD Pipeline
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main, staging, develop]
   pull_request:
-    branches: [main, develop]
+    branches: [main, staging]
+  workflow_dispatch:
+
+env:
+  NODE_VERSION: '20'
+  CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+  CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
 
 jobs:
-  build-and-test:
-    name: Build, Lint, and Test
+  # Code Quality Checks
+  lint:
+    name: Lint and Format Check
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup Node.js 22
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
 
       - name: Install dependencies
@@ -29,83 +35,95 @@ jobs:
             npm install
           fi
 
-      - name: TypeScript compilation check
-        run: npm run type-check
-
       - name: Run ESLint
         run: npm run lint
 
-      - name: Check code formatting
+      - name: Check formatting
         run: npm run format:check
+
+      - name: Type check
+        run: npm run type-check
+
+  # Unit Tests
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
 
       - name: Run tests
         run: npm run test:coverage
 
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v3
+      - name: Upload coverage reports
+        uses: codecov/codecov-action@v4
+        if: always()
+        continue-on-error: true
         with:
+          token: ${{ secrets.CODECOV_TOKEN }}
           files: ./coverage/coverage-final.json
           flags: unittests
           name: codecov-umbrella
-        continue-on-error: true
 
-      - name: Build project
+  # Build Check
+  build:
+    name: Build Application
+    runs-on: ubuntu-latest
+    needs: [lint, test]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      - name: Build frontend
         run: npm run build
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: build-artifacts
+          name: dist
           path: dist/
           retention-days: 7
 
-  deploy-cloudflare:
-    name: Deploy to Cloudflare Workers
-    needs: build-and-test
+  # Security Scanning
+  security:
+    name: Security Audit
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup Node.js 22
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '22'
-          cache: 'npm'
-
-      - name: Install dependencies
-        run: |
-          if [ -f package-lock.json ]; then
-            npm ci
-          else
-            npm install
-          fi
-
-      - name: Build worker
-        run: npm run build
-
-      - name: Deploy to Cloudflare Workers
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: deploy
-        continue-on-error: true
-
-  security-scan:
-    name: Security Scan
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js 22
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
+          node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
 
       - name: Install dependencies
@@ -127,3 +145,142 @@ jobs:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         with:
           args: --severity-threshold=high
+
+  # Deploy to Development (on develop branch)
+  deploy-dev:
+    name: Deploy to Development
+    runs-on: ubuntu-latest
+    needs: [build]
+    if: github.ref == 'refs/heads/develop' && github.event_name == 'push'
+    environment:
+      name: development
+      url: https://dev.your-domain.com
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      - name: Deploy to Cloudflare Workers (dev)
+        run: npx wrangler deploy --env development
+        continue-on-error: true
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+
+  # Deploy to Staging
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: [build]
+    if: github.ref == 'refs/heads/staging' && github.event_name == 'push'
+    environment:
+      name: staging
+      url: https://staging.your-domain.com
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      - name: Deploy to Cloudflare Workers (staging)
+        run: npx wrangler deploy --env staging
+        continue-on-error: true
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+
+      - name: Run smoke tests
+        run: |
+          echo "Running smoke tests against staging..."
+          # Add your smoke test commands here
+
+  # Deploy to Production
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: [build, security]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    environment:
+      name: production
+      url: https://your-domain.com
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      - name: Deploy to Cloudflare Workers (production)
+        run: npx wrangler deploy --env production
+        continue-on-error: true
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+
+      - name: Create deployment tag
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          TAG="v$(date +%Y%m%d-%H%M%S)"
+          git tag -a $TAG -m "Production deployment $TAG"
+          git push origin $TAG
+
+      - name: Notify deployment
+        if: always()
+        run: |
+          echo "Deployment to production completed"
+          # Add notification logic here (Slack, Discord, etc.)
+
+  # Performance Testing
+  performance:
+    name: Performance Tests
+    runs-on: ubuntu-latest
+    needs: [deploy-staging]
+    if: github.ref == 'refs/heads/staging'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Lighthouse CI
+        uses: treosh/lighthouse-ci-action@v10
+        with:
+          urls: |
+            https://staging.your-domain.com
+          uploadArtifacts: true
+          temporaryPublicStorage: true
