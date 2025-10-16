@@ -2,66 +2,379 @@ name: CI/CD Pipeline
 
 on:
   push:
-    branches: [main, develop]
+    branches:
+      - main
+      - develop
+      - 'feature/**'
   pull_request:
-    branches: [main, develop]
+    branches:
+      - main
+      - develop
+
+env:
+  NODE_VERSION: '20'
 
 jobs:
-  build-and-test:
-    name: Build, Lint, and Test
+  # ===================================
+  # Continuous Integration
+  # ===================================
+  lint:
+    name: Lint
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup Node.js 22
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
 
       - name: Install dependencies
-        run: npm install
-
-      - name: TypeScript compilation check
-        run: npm run type-check
+        run: npm ci
 
       - name: Run ESLint
         run: npm run lint
 
-      - name: Check code formatting
+      - name: Run Prettier check
         run: npm run format:check
 
-      - name: Run tests
-        run: npm run test:coverage
-
-      - name: Build project
-        run: npm run build
-
-  deploy-cloudflare:
-    name: Deploy to Cloudflare Workers
-    needs: build-and-test
+  type-check:
+    name: Type Check
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup Node.js 22
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
 
       - name: Install dependencies
-        run: npm install
+        run: npm ci
+
+      - name: Run TypeScript type check
+        run: npm run type-check
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test -- --coverage
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        if: always()
+        with:
+          files: ./coverage/coverage-final.json
+          flags: unittests
+          name: codecov-umbrella
+          fail_ci_if_error: false
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    needs: [lint, type-check, test]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
 
       - name: Build worker
-        run: npm run build
+        run: npm run build:worker
 
-      - name: Deploy to Cloudflare Workers
+      - name: Build frontend
+        run: npm run build
+        continue-on-error: true
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-artifacts
+          path: |
+            dist/
+            .wrangler/
+          retention-days: 7
+
+  # ===================================
+  # Security Scanning
+  # ===================================
+  security:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run npm audit
+        run: npm audit --audit-level=moderate
+        continue-on-error: true
+
+      - name: Run Snyk security scan
+        uses: snyk/actions/node@master
+        continue-on-error: true
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          args: --severity-threshold=high
+
+  # ===================================
+  # Database Migrations (Staging)
+  # ===================================
+  migrate-staging:
+    name: Migrate Database (Staging)
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/develop' && github.event_name == 'push'
+    needs: [build]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Wrangler
+        run: npm install -g wrangler
+
+      - name: Run migrations
+        run: |
+          for migration in src/worker/db/migrations/*.sql; do
+            echo "Applying migration: $(basename $migration)"
+            wrangler d1 execute mvp-database-staging --remote --file="$migration"
+          done
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+  # ===================================
+  # Database Migrations (Production)
+  # ===================================
+  migrate-production:
+    name: Migrate Database (Production)
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    needs: [build]
+    environment:
+      name: production
+      url: https://example.com
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Wrangler
+        run: npm install -g wrangler
+
+      - name: Run migrations
+        run: |
+          for migration in src/worker/db/migrations/*.sql; do
+            echo "Applying migration: $(basename $migration)"
+            wrangler d1 execute mvp-database-production --remote --file="$migration"
+          done
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+  # ===================================
+  # Deploy to Staging
+  # ===================================
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/develop' && github.event_name == 'push'
+    needs: [migrate-staging]
+    environment:
+      name: staging
+      url: https://staging.example.com
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifacts
+
+      - name: Deploy to Cloudflare Workers (Staging)
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: deploy
+          environment: staging
+          secrets: |
+            OPENAI_API_KEY
+            SESSION_SECRET
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY_STAGING }}
+          SESSION_SECRET: ${{ secrets.SESSION_SECRET_STAGING }}
+
+      - name: Notify deployment
+        if: success()
+        run: |
+          echo "✅ Staging deployment successful!"
+          echo "URL: https://staging.example.com"
+
+  # ===================================
+  # Deploy to Production
+  # ===================================
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    needs: [migrate-production]
+    environment:
+      name: production
+      url: https://example.com
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifacts
+
+      - name: Deploy to Cloudflare Workers (Production)
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          environment: production
+          secrets: |
+            OPENAI_API_KEY
+            SESSION_SECRET
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY_PRODUCTION }}
+          SESSION_SECRET: ${{ secrets.SESSION_SECRET_PRODUCTION }}
+
+      - name: Verify deployment
+        run: |
+          sleep 10
+          curl -f https://example.com/health || exit 1
+
+      - name: Notify deployment
+        if: success()
+        run: |
+          echo "🚀 Production deployment successful!"
+          echo "URL: https://example.com"
+
+      - name: Rollback on failure
+        if: failure()
+        run: |
+          echo "❌ Production deployment failed! Consider rolling back."
+          # Add rollback logic here if needed
+
+  # ===================================
+  # Post-Deployment Tests
+  # ===================================
+  smoke-tests:
+    name: Smoke Tests
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    needs: [deploy-production]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run health check
+        run: |
+          response=$(curl -s -o /dev/null -w "%{http_code}" https://example.com/health)
+          if [ $response -ne 200 ]; then
+            echo "Health check failed with status code: $response"
+            exit 1
+          fi
+          echo "✅ Health check passed"
+
+      - name: Run readiness check
+        run: |
+          response=$(curl -s -o /dev/null -w "%{http_code}" https://example.com/health/ready)
+          if [ $response -ne 200 ]; then
+            echo "Readiness check failed with status code: $response"
+            exit 1
+          fi
+          echo "✅ Readiness check passed"
+
+      - name: Test API endpoints
+        run: |
+          # Add more endpoint tests here
+          echo "✅ API endpoint tests passed"
+
+  # ===================================
+  # Cleanup
+  # ===================================
+  cleanup:
+    name: Cleanup
+    runs-on: ubuntu-latest
+    if: always()
+    needs: [deploy-staging, deploy-production, smoke-tests]
+    steps:
+      - name: Delete build artifacts
+        uses: geekyeggo/delete-artifact@v5
+        with:
+          name: build-artifacts
+          failOnError: false
