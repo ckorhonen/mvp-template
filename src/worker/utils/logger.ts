@@ -1,204 +1,98 @@
+// ===========================================
+// Logger Utility
+// Structured logging for Cloudflare Workers
+// ===========================================
+
+import type { LogLevel, LogEntry } from '../types';
+import { LogLevel as Level } from '../types';
+
 /**
- * Logger Utility
- * 
- * Structured logging for Cloudflare Workers with support for different log levels
+ * Logger Class
+ * Provides structured logging with different levels
  */
-
-export enum LogLevel {
-  DEBUG = 0,
-  INFO = 1,
-  WARN = 2,
-  ERROR = 3,
-  CRITICAL = 4,
-}
-
-export interface LogContext {
-  [key: string]: any;
-}
-
-export interface LogEntry {
-  timestamp: string;
-  level: string;
-  message: string;
-  context?: LogContext;
-  error?: {
-    name: string;
-    message: string;
-    stack?: string;
-  };
-}
-
 export class Logger {
   private minLevel: LogLevel;
-  private context: LogContext;
+  private context: string;
 
-  constructor(minLevel: LogLevel = LogLevel.INFO, context: LogContext = {}) {
-    this.minLevel = minLevel;
+  constructor(context: string, minLevel: LogLevel = Level.INFO) {
     this.context = context;
+    this.minLevel = minLevel;
   }
 
-  /**
-   * Create a child logger with additional context
-   */
-  child(context: LogContext): Logger {
-    return new Logger(this.minLevel, { ...this.context, ...context });
-  }
-
-  /**
-   * Set minimum log level
-   */
-  setLevel(level: LogLevel): void {
-    this.minLevel = level;
-  }
-
-  /**
-   * Log a message at the specified level
-   */
-  private log(level: LogLevel, message: string, context?: LogContext): void {
+  private log(level: LogLevel, message: string, data?: any): void {
     if (level < this.minLevel) {
       return;
     }
 
     const entry: LogEntry = {
-      timestamp: new Date().toISOString(),
-      level: LogLevel[level],
+      level,
       message,
-      context: { ...this.context, ...context },
+      timestamp: new Date().toISOString(),
+      data,
     };
 
-    const output = JSON.stringify(entry);
+    const logMessage = {
+      ...entry,
+      context: this.context,
+      level: Level[level],
+    };
 
+    // Output to console based on level
     switch (level) {
-      case LogLevel.DEBUG:
-      case LogLevel.INFO:
-        console.log(output);
+      case Level.DEBUG:
+        console.debug(JSON.stringify(logMessage));
         break;
-      case LogLevel.WARN:
-        console.warn(output);
+      case Level.INFO:
+        console.info(JSON.stringify(logMessage));
         break;
-      case LogLevel.ERROR:
-      case LogLevel.CRITICAL:
-        console.error(output);
+      case Level.WARN:
+        console.warn(JSON.stringify(logMessage));
+        break;
+      case Level.ERROR:
+        console.error(JSON.stringify(logMessage));
         break;
     }
   }
 
-  /**
-   * Log debug message
-   */
-  debug(message: string, context?: LogContext): void {
-    this.log(LogLevel.DEBUG, message, context);
+  debug(message: string, data?: any): void {
+    this.log(Level.DEBUG, message, data);
   }
 
-  /**
-   * Log info message
-   */
-  info(message: string, context?: LogContext): void {
-    this.log(LogLevel.INFO, message, context);
+  info(message: string, data?: any): void {
+    this.log(Level.INFO, message, data);
   }
 
-  /**
-   * Log warning message
-   */
-  warn(message: string, context?: LogContext): void {
-    this.log(LogLevel.WARN, message, context);
+  warn(message: string, data?: any): void {
+    this.log(Level.WARN, message, data);
   }
 
-  /**
-   * Log error message
-   */
-  error(message: string, error?: Error, context?: LogContext): void {
-    const entry: LogEntry = {
-      timestamp: new Date().toISOString(),
-      level: 'ERROR',
-      message,
-      context: { ...this.context, ...context },
-    };
-
-    if (error) {
-      entry.error = {
-        name: error.name,
-        message: error.message,
-        stack: error.stack,
-      };
-    }
-
-    console.error(JSON.stringify(entry));
+  error(message: string, data?: any): void {
+    this.log(Level.ERROR, message, data);
   }
 
-  /**
-   * Log critical error message
-   */
-  critical(message: string, error?: Error, context?: LogContext): void {
-    const entry: LogEntry = {
-      timestamp: new Date().toISOString(),
-      level: 'CRITICAL',
-      message,
-      context: { ...this.context, ...context },
-    };
-
-    if (error) {
-      entry.error = {
-        name: error.name,
-        message: error.message,
-        stack: error.stack,
-      };
-    }
-
-    console.error(JSON.stringify(entry));
-  }
-
-  /**
-   * Time a function execution
-   */
-  async time<T>(
-    label: string,
-    fn: () => Promise<T> | T,
-    context?: LogContext,
-  ): Promise<T> {
-    const start = Date.now();
-    try {
-      const result = await fn();
-      const duration = Date.now() - start;
-      this.debug(`${label} completed`, { ...context, duration_ms: duration });
-      return result;
-    } catch (error) {
-      const duration = Date.now() - start;
-      this.error(
-        `${label} failed`,
-        error instanceof Error ? error : new Error(String(error)),
-        { ...context, duration_ms: duration },
-      );
-      throw error;
-    }
+  setMinLevel(level: LogLevel): void {
+    this.minLevel = level;
   }
 }
 
 /**
- * Create a logger instance with environment-based configuration
+ * Get a logger instance
  */
-export function createLogger(
-  env?: { LOG_LEVEL?: string; ENVIRONMENT?: string },
-  context?: LogContext,
-): Logger {
-  let level = LogLevel.INFO;
+export function getLogger(context: string, logLevelStr?: string): Logger {
+  const logLevel = parseLogLevel(logLevelStr || 'info');
+  return new Logger(context, logLevel);
+}
 
-  if (env?.LOG_LEVEL) {
-    const envLevel = env.LOG_LEVEL.toUpperCase();
-    if (envLevel in LogLevel) {
-      level = LogLevel[envLevel as keyof typeof LogLevel] as LogLevel;
-    }
-  }
-
-  const baseContext: LogContext = {
-    environment: env?.ENVIRONMENT || 'unknown',
-    ...context,
+/**
+ * Parse log level from string
+ */
+function parseLogLevel(level: string): LogLevel {
+  const levelMap: Record<string, LogLevel> = {
+    debug: Level.DEBUG,
+    info: Level.INFO,
+    warn: Level.WARN,
+    error: Level.ERROR,
   };
 
-  return new Logger(level, baseContext);
+  return levelMap[level.toLowerCase()] || Level.INFO;
 }
-
-/**
- * Default logger instance
- */
-export const logger = new Logger();
