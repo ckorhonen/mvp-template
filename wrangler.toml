@@ -1,9 +1,10 @@
 name = "mvp-template"
 main = "src/worker/index.ts"
-compatibility_date = "2024-01-01"
-compatibility_flags = ["nodejs_compat"]
+compatibility_date = "2025-01-01"
+compatibility_flags = ["nodejs_compat", "streams_enable_constructors"]
 
 # Account ID - update with your Cloudflare account ID
+# Get from: https://dash.cloudflare.com
 # account_id = "your-account-id-here"
 
 # Workers configuration
@@ -13,44 +14,56 @@ workers_dev = true
 [build]
 command = "npm run build:worker"
 
-# KV Namespaces
-[[kv_namespaces]]
-binding = "CACHE"
-id = "your-kv-namespace-id"
-preview_id = "your-preview-kv-namespace-id"
+# Observability
+[observability]
+enabled = true
+head_sampling_rate = 1.0
 
-[[kv_namespaces]]
-binding = "SESSIONS"
-id = "your-sessions-kv-id"
-preview_id = "your-preview-sessions-kv-id"
-
-# R2 Buckets
-[[r2_buckets]]
-binding = "ASSETS"
-bucket_name = "mvp-assets"
-preview_bucket_name = "mvp-assets-preview"
-
-[[r2_buckets]]
-binding = "UPLOADS"
-bucket_name = "mvp-uploads"
-preview_bucket_name = "mvp-uploads-preview"
-
+# ============================================
 # D1 Databases
+# ============================================
 [[d1_databases]]
 binding = "DB"
 database_name = "mvp-database"
 database_id = "your-d1-database-id"
-preview_database_id = "your-preview-d1-database-id"
 
-# AI Gateway Configuration
+# ============================================
+# KV Namespaces
+# ============================================
+[[kv_namespaces]]
+binding = "CACHE"
+id = "your-kv-namespace-id"
+
+[[kv_namespaces]]
+binding = "SESSIONS"
+id = "your-sessions-kv-id"
+
+# ============================================
+# R2 Buckets
+# ============================================
+[[r2_buckets]]
+binding = "ASSETS"
+bucket_name = "mvp-assets"
+
+[[r2_buckets]]
+binding = "UPLOADS"
+bucket_name = "mvp-uploads"
+
+# ============================================
+# AI Binding (for Cloudflare Workers AI)
+# ============================================
 [ai]
 binding = "AI"
 
+# ============================================
 # Analytics Engine
+# ============================================
 [[analytics_engine_datasets]]
 binding = "ANALYTICS"
 
+# ============================================
 # Queues
+# ============================================
 [[queues.producers]]
 binding = "TASK_QUEUE"
 queue = "mvp-tasks"
@@ -60,7 +73,9 @@ queue = "mvp-tasks"
 max_batch_size = 10
 max_batch_timeout = 30
 
+# ============================================
 # Durable Objects
+# ============================================
 [[durable_objects.bindings]]
 name = "RATE_LIMITER"
 class_name = "RateLimiter"
@@ -70,13 +85,65 @@ script_name = "mvp-template"
 tag = "v1"
 new_classes = ["RateLimiter"]
 
-# Environment Variables (secrets should be set via wrangler secret put)
+# ============================================
+# Environment Variables
+# ============================================
+# Note: Sensitive values should be set via: wrangler secret put <KEY>
 [vars]
 ENVIRONMENT = "development"
-LOG_LEVEL = "info"
+LOG_LEVEL = "debug"
 AI_GATEWAY_ID = "your-ai-gateway-id"
+CORS_ORIGINS = "http://localhost:3000,http://localhost:5173"
 
+# ============================================
+# Development Environment
+# ============================================
+[env.dev]
+name = "mvp-template-dev"
+workers_dev = true
+
+[env.dev.vars]
+ENVIRONMENT = "development"
+LOG_LEVEL = "debug"
+
+# ============================================
+# Staging Environment
+# ============================================
+[env.staging]
+name = "mvp-template-staging"
+route = { pattern = "staging.example.com/*", zone_name = "example.com" }
+
+[env.staging.vars]
+ENVIRONMENT = "staging"
+LOG_LEVEL = "info"
+
+# Staging-specific D1 database
+[[env.staging.d1_databases]]
+binding = "DB"
+database_name = "mvp-database-staging"
+database_id = "your-staging-d1-database-id"
+
+# Staging-specific KV namespaces
+[[env.staging.kv_namespaces]]
+binding = "CACHE"
+id = "your-staging-kv-namespace-id"
+
+[[env.staging.kv_namespaces]]
+binding = "SESSIONS"
+id = "your-staging-sessions-kv-id"
+
+# Staging-specific R2 buckets
+[[env.staging.r2_buckets]]
+binding = "ASSETS"
+bucket_name = "mvp-assets-staging"
+
+[[env.staging.r2_buckets]]
+binding = "UPLOADS"
+bucket_name = "mvp-uploads-staging"
+
+# ============================================
 # Production Environment
+# ============================================
 [env.production]
 name = "mvp-template-production"
 route = { pattern = "example.com/*", zone_name = "example.com" }
@@ -85,16 +152,39 @@ route = { pattern = "example.com/*", zone_name = "example.com" }
 ENVIRONMENT = "production"
 LOG_LEVEL = "warn"
 
-# Staging Environment
-[env.staging]
-name = "mvp-template-staging"
-route = { pattern = "staging.example.com/*", zone_name = "example.com" }
+# Production-specific D1 database
+[[env.production.d1_databases]]
+binding = "DB"
+database_name = "mvp-database-production"
+database_id = "your-production-d1-database-id"
 
-[env.staging.vars]
-ENVIRONMENT = "staging"
-LOG_LEVEL = "debug"
+# Production-specific KV namespaces
+[[env.production.kv_namespaces]]
+binding = "CACHE"
+id = "your-production-kv-namespace-id"
 
-# Observability
-[observability]
-enabled = true
-head_sampling_rate = 1.0
+[[env.production.kv_namespaces]]
+binding = "SESSIONS"
+id = "your-production-sessions-kv-id"
+
+# Production-specific R2 buckets
+[[env.production.r2_buckets]]
+binding = "ASSETS"
+bucket_name = "mvp-assets-production"
+
+[[env.production.r2_buckets]]
+binding = "UPLOADS"
+bucket_name = "mvp-uploads-production"
+
+# ============================================
+# Tail Consumers (for logging/debugging)
+# ============================================
+# [[tail_consumers]]
+# service = "my-log-consumer"
+
+# ============================================
+# Hyperdrive (for database connections)
+# ============================================
+# [[hyperdrive]]
+# binding = "HYPERDRIVE"
+# id = "your-hyperdrive-id"
