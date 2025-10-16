@@ -1,56 +1,107 @@
+# ================================================
+# Cloudflare Workers Configuration
+# ================================================
+# MVP Template - Updated with latest best practices
+# Documentation: https://developers.cloudflare.com/workers/wrangler/configuration/
+
+# ================================================
+# Basic Configuration
+# ================================================
+
 name = "mvp-template"
 main = "src/worker/index.ts"
-compatibility_date = "2024-01-01"
+compatibility_date = "2025-01-01"
 compatibility_flags = ["nodejs_compat"]
 
-# Account ID - update with your Cloudflare account ID
+# Account ID - REQUIRED: Get from Cloudflare Dashboard
+# Find at: Workers & Pages > Account ID
 # account_id = "your-account-id-here"
 
 # Workers configuration
 workers_dev = true
 
-# Build configuration
+# ================================================
+# Build Configuration
+# ================================================
+
 [build]
 command = "npm run build:worker"
 
-# KV Namespaces
-[[kv_namespaces]]
-binding = "CACHE"
-id = "your-kv-namespace-id"
-preview_id = "your-preview-kv-namespace-id"
+[build.upload]
+format = "service-worker"
 
-[[kv_namespaces]]
-binding = "SESSIONS"
-id = "your-sessions-kv-id"
-preview_id = "your-preview-sessions-kv-id"
-
-# R2 Buckets
-[[r2_buckets]]
-binding = "ASSETS"
-bucket_name = "mvp-assets"
-preview_bucket_name = "mvp-assets-preview"
-
-[[r2_buckets]]
-binding = "UPLOADS"
-bucket_name = "mvp-uploads"
-preview_bucket_name = "mvp-uploads-preview"
-
+# ================================================
 # D1 Databases
+# ================================================
+# SQLite databases at the edge
+# Create: wrangler d1 create DATABASE_NAME
+# Documentation: https://developers.cloudflare.com/d1/
+
 [[d1_databases]]
 binding = "DB"
 database_name = "mvp-database"
 database_id = "your-d1-database-id"
-preview_database_id = "your-preview-d1-database-id"
 
+# Migrations
+migrations_dir = "src/worker/db/migrations"
+migrations_table = "__d1_migrations"
+
+# ================================================
+# KV Namespaces
+# ================================================
+# Key-Value storage for caching and sessions
+# Create: wrangler kv:namespace create NAMESPACE_NAME
+# Documentation: https://developers.cloudflare.com/kv/
+
+[[kv_namespaces]]
+binding = "CACHE"
+id = "your-kv-namespace-id"
+
+[[kv_namespaces]]
+binding = "SESSIONS"
+id = "your-sessions-kv-id"
+
+# ================================================
+# R2 Buckets
+# ================================================
+# S3-compatible object storage
+# Create: wrangler r2 bucket create BUCKET_NAME
+# Documentation: https://developers.cloudflare.com/r2/
+
+[[r2_buckets]]
+binding = "ASSETS"
+bucket_name = "mvp-assets"
+
+[[r2_buckets]]
+binding = "UPLOADS"
+bucket_name = "mvp-uploads"
+
+# ================================================
 # AI Gateway Configuration
+# ================================================
+# AI Gateway for OpenAI/Anthropic/etc. with caching
+# Create at: AI > AI Gateway in Cloudflare Dashboard
+# Documentation: https://developers.cloudflare.com/ai-gateway/
+
 [ai]
 binding = "AI"
 
+# ================================================
 # Analytics Engine
+# ================================================
+# High-scale analytics and logging
+# Documentation: https://developers.cloudflare.com/analytics/analytics-engine/
+
 [[analytics_engine_datasets]]
 binding = "ANALYTICS"
 
+# ================================================
 # Queues
+# ================================================
+# Message queue for background tasks
+# Create: wrangler queues create QUEUE_NAME
+# Documentation: https://developers.cloudflare.com/queues/
+
 [[queues.producers]]
 binding = "TASK_QUEUE"
 queue = "mvp-tasks"
@@ -59,42 +110,187 @@ queue = "mvp-tasks"
 queue = "mvp-tasks"
 max_batch_size = 10
 max_batch_timeout = 30
+max_retries = 3
+dead_letter_queue = "mvp-tasks-dlq"
 
+# ================================================
 # Durable Objects
+# ================================================
+# Stateful serverless objects
+# Documentation: https://developers.cloudflare.com/durable-objects/
+
 [[durable_objects.bindings]]
 name = "RATE_LIMITER"
 class_name = "RateLimiter"
 script_name = "mvp-template"
 
+# Durable Objects migrations
 [[migrations]]
 tag = "v1"
 new_classes = ["RateLimiter"]
 
-# Environment Variables (secrets should be set via wrangler secret put)
+# ================================================
+# Environment Variables
+# ================================================
+# Non-sensitive configuration values
+# For secrets, use: wrangler secret put SECRET_NAME
+
 [vars]
 ENVIRONMENT = "development"
-LOG_LEVEL = "info"
+LOG_LEVEL = "debug"
 AI_GATEWAY_ID = "your-ai-gateway-id"
 
-# Production Environment
-[env.production]
-name = "mvp-template-production"
-route = { pattern = "example.com/*", zone_name = "example.com" }
-
-[env.production.vars]
-ENVIRONMENT = "production"
-LOG_LEVEL = "warn"
-
-# Staging Environment
-[env.staging]
-name = "mvp-template-staging"
-route = { pattern = "staging.example.com/*", zone_name = "example.com" }
-
-[env.staging.vars]
-ENVIRONMENT = "staging"
-LOG_LEVEL = "debug"
-
+# ================================================
 # Observability
+# ================================================
+# Logs, traces, and monitoring
+# Documentation: https://developers.cloudflare.com/workers/observability/
+
 [observability]
 enabled = true
 head_sampling_rate = 1.0
+
+# Logpush configuration (optional)
+# [logpush]
+# enabled = true
+# destination_conf = "r2://my-bucket/logs"
+
+# ================================================
+# Triggers
+# ================================================
+# Cron triggers for scheduled tasks
+# Documentation: https://developers.cloudflare.com/workers/configuration/cron-triggers/
+
+[triggers]
+crons = [
+  "0 0 * * *",      # Daily at midnight UTC
+  "0 */6 * * *",    # Every 6 hours
+]
+
+# ================================================
+# Limits and Performance
+# ================================================
+
+[limits]
+# CPU time limit (10-50ms for free, up to 30s for paid)
+cpu_ms = 50
+
+# ================================================
+# Development Environment
+# ================================================
+
+[env.dev]
+name = "mvp-template-dev"
+vars = { ENVIRONMENT = "development", LOG_LEVEL = "debug" }
+
+# Use preview resources for development
+[[env.dev.d1_databases]]
+binding = "DB"
+database_name = "mvp-database-preview"
+database_id = "your-preview-d1-database-id"
+
+[[env.dev.kv_namespaces]]
+binding = "CACHE"
+id = "your-preview-kv-namespace-id"
+
+[[env.dev.kv_namespaces]]
+binding = "SESSIONS"
+id = "your-preview-sessions-kv-id"
+
+[[env.dev.r2_buckets]]
+binding = "ASSETS"
+bucket_name = "mvp-assets-preview"
+
+[[env.dev.r2_buckets]]
+binding = "UPLOADS"
+bucket_name = "mvp-uploads-preview"
+
+# ================================================
+# Staging Environment
+# ================================================
+
+[env.staging]
+name = "mvp-template-staging"
+route = { pattern = "staging.example.com/*", zone_name = "example.com" }
+vars = { ENVIRONMENT = "staging", LOG_LEVEL = "info" }
+
+# Use staging-specific resources
+[[env.staging.d1_databases]]
+binding = "DB"
+database_name = "mvp-database-staging"
+database_id = "your-staging-d1-database-id"
+
+[[env.staging.kv_namespaces]]
+binding = "CACHE"
+id = "your-staging-kv-namespace-id"
+
+[[env.staging.kv_namespaces]]
+binding = "SESSIONS"
+id = "your-staging-sessions-kv-id"
+
+[[env.staging.r2_buckets]]
+binding = "ASSETS"
+bucket_name = "mvp-assets-staging"
+
+[[env.staging.r2_buckets]]
+binding = "UPLOADS"
+bucket_name = "mvp-uploads-staging"
+
+# ================================================
+# Production Environment
+# ================================================
+
+[env.production]
+name = "mvp-template-production"
+route = { pattern = "api.example.com/*", zone_name = "example.com" }
+vars = { ENVIRONMENT = "production", LOG_LEVEL = "warn" }
+
+# Use production resources
+[[env.production.d1_databases]]
+binding = "DB"
+database_name = "mvp-database-production"
+database_id = "your-production-d1-database-id"
+
+[[env.production.kv_namespaces]]
+binding = "CACHE"
+id = "your-production-kv-namespace-id"
+
+[[env.production.kv_namespaces]]
+binding = "SESSIONS"
+id = "your-production-sessions-kv-id"
+
+[[env.production.r2_buckets]]
+binding = "ASSETS"
+bucket_name = "mvp-assets-production"
+
+[[env.production.r2_buckets]]
+binding = "UPLOADS"
+bucket_name = "mvp-uploads-production"
+
+# Production-specific settings
+[env.production.limits]
+cpu_ms = 50
+
+[env.production.observability]
+enabled = true
+head_sampling_rate = 0.1  # Sample 10% of requests in production
+
+# ================================================
+# Custom Domains (Optional)
+# ================================================
+# Configure after adding domain to Cloudflare
+
+# [env.production.routes]
+# pattern = "api.yourdomain.com/*"
+# zone_name = "yourdomain.com"
+# custom_domain = true
+
+# ================================================
+# Notes
+# ================================================
+# 1. Replace all "your-*-id" placeholders with actual IDs
+# 2. Update domain names (example.com) with your actual domains
+# 3. Create resources using wrangler CLI before deploying
+# 4. Set secrets using: wrangler secret put SECRET_NAME
+# 5. Deploy to specific environment: wrangler deploy --env production
+# 6. Run migrations: wrangler d1 migrations apply DB
