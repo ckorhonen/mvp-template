@@ -1,139 +1,218 @@
 /**
  * Cloudflare Workers MVP Template
- * Main entry point with comprehensive routing and middleware
+ * Main entry point with routing and middleware
  */
 
 import { Env } from './types';
-import { Router } from './utils/router';
-import { ResponseBuilder } from './utils/response';
-import { loggingMiddleware } from './middleware/logging';
-import { rateLimitMiddleware } from './middleware/ratelimit';
-import { authMiddleware } from './middleware/auth';
+import { corsPreflightResponse, ErrorResponses } from './utils/response';
+import { createLogger } from './utils/logger';
+import { createRateLimiter, getRequestIdentifier, addRateLimitHeaders } from './utils/ratelimit';
+import { generateId } from './utils/auth';
 
 // Import route handlers
-import { chatHandler, embeddingsHandler, chatStreamHandler } from './routes/ai';
-import { 
-  listUsersHandler, 
-  getUserHandler, 
-  createUserHandler, 
-  updateUserHandler, 
-  deleteUserHandler 
-} from './routes/database';
-import { 
-  uploadHandler, 
-  downloadHandler, 
-  deleteFileHandler, 
-  listFilesHandler 
-} from './routes/storage';
-import { 
-  getCacheHandler, 
-  setCacheHandler, 
-  deleteCacheHandler 
-} from './routes/cache';
+import { handleChatCompletion, handleEmbedding, handleStreamingChat } from './routes/ai';
+import {
+  handleListItems,
+  handleGetItem,
+  handleCreateItem,
+  handleUpdateItem,
+  handleDeleteItem,
+} from './routes/db';
+import { handleGetCache, handleSetCache, handleDeleteCache, handleListCache } from './routes/kv';
+import {
+  handleGetFile,
+  handleUploadFile,
+  handleDeleteFile,
+  handleListFiles,
+  handleHeadFile,
+} from './routes/r2';
+import { handleHealthCheck } from './routes/health';
 
 /**
- * Initialize router with middleware and routes
+ * Router type definition
  */
-function createRouter(): Router {
-  const router = new Router();
+type RouteHandler = (request: Request, env: Env, params: any, requestId?: string) => Promise<Response>;
 
-  // Global middleware
-  router.use(loggingMiddleware);
-
-  // Health check endpoint (no rate limit)
-  router.get('/health', async () => {
-    return ResponseBuilder.success({
-      status: 'healthy',
-      timestamp: new Date().toISOString(),
-      version: '1.0.0',
-    });
-  });
-
-  // API info endpoint
-  router.get('/api', async () => {
-    return ResponseBuilder.success({
-      name: 'Cloudflare Workers MVP Template',
-      version: '1.0.0',
-      endpoints: {
-        ai: [
-          'POST /api/ai/chat',
-          'POST /api/ai/chat/stream',
-          'POST /api/ai/embeddings',
-        ],
-        database: [
-          'GET /api/users',
-          'GET /api/users/:id',
-          'POST /api/users',
-          'PUT /api/users/:id',
-          'DELETE /api/users/:id',
-        ],
-        storage: [
-          'POST /api/storage/upload',
-          'GET /api/storage/:key',
-          'DELETE /api/storage/:key',
-          'GET /api/storage',
-        ],
-        cache: [
-          'GET /api/cache/:key',
-          'POST /api/cache',
-          'DELETE /api/cache/:key',
-        ],
-      },
-    });
-  });
-
-  // Rate limited API routes
-  const apiRateLimit = rateLimitMiddleware({
-    windowMs: 60000, // 1 minute
-    maxRequests: 100,
-  });
-
-  // AI Gateway routes
-  router.post('/api/ai/chat', chatHandler, apiRateLimit);
-  router.post('/api/ai/chat/stream', chatStreamHandler, apiRateLimit);
-  router.post('/api/ai/embeddings', embeddingsHandler, apiRateLimit);
-
-  // Database routes (with authentication example)
-  router.get('/api/users', listUsersHandler);
-  router.get('/api/users/:id', getUserHandler);
-  router.post('/api/users', createUserHandler);
-  router.put('/api/users/:id', updateUserHandler);
-  router.delete('/api/users/:id', deleteUserHandler);
-
-  // Storage routes
-  router.post('/api/storage/upload', uploadHandler, apiRateLimit);
-  router.get('/api/storage/:key', downloadHandler);
-  router.delete('/api/storage/:key', deleteFileHandler);
-  router.get('/api/storage', listFilesHandler);
-
-  // Cache routes
-  router.get('/api/cache/:key', getCacheHandler);
-  router.post('/api/cache', setCacheHandler);
-  router.delete('/api/cache/:key', deleteCacheHandler);
-
-  // Custom 404 handler
-  router.setNotFoundHandler(async (request) => {
-    return ResponseBuilder.error(
-      new Error('Endpoint not found'),
-      404
-    );
-  });
-
-  return router;
+interface Route {
+  method: string;
+  pattern: RegExp;
+  handler: RouteHandler;
 }
 
-// Create router instance
-const router = createRouter();
+/**
+ * Define all routes
+ */
+const routes: Route[] = [
+  // Health check
+  { method: 'GET', pattern: /^\/api\/health$/, handler: handleHealthCheck },
+
+  // AI routes
+  { method: 'POST', pattern: /^\/api\/ai\/chat$/, handler: handleChatCompletion },
+  { method: 'POST', pattern: /^\/api\/ai\/embed$/, handler: handleEmbedding },
+  { method: 'POST', pattern: /^\/api\/ai\/stream$/, handler: handleStreamingChat },
+
+  // Database routes
+  { method: 'GET', pattern: /^\/api\/db\/items$/, handler: handleListItems },
+  { method: 'GET', pattern: /^\/api\/db\/items\/(\d+)$/, handler: (req, env, match, reqId) => handleGetItem(req, env, match[1], reqId) },
+  { method: 'POST', pattern: /^\/api\/db\/items$/, handler: handleCreateItem },
+  { method: 'PUT', pattern: /^\/api\/db\/items\/(\d+)$/, handler: (req, env, match, reqId) => handleUpdateItem(req, env, match[1], reqId) },
+  { method: 'DELETE', pattern: /^\/api\/db\/items\/(\d+)$/, handler: (req, env, match, reqId) => handleDeleteItem(req, env, match[1], reqId) },
+
+  // KV cache routes
+  { method: 'GET', pattern: /^\/api\/kv\/cache$/, handler: handleListCache },
+  { method: 'GET', pattern: /^\/api\/kv\/cache\/([^/]+)$/, handler: (req, env, match, reqId) => handleGetCache(req, env, match[1], reqId) },
+  { method: 'PUT', pattern: /^\/api\/kv\/cache\/([^/]+)$/, handler: (req, env, match, reqId) => handleSetCache(req, env, match[1], reqId) },
+  { method: 'DELETE', pattern: /^\/api\/kv\/cache\/([^/]+)$/, handler: (req, env, match, reqId) => handleDeleteCache(req, env, match[1], reqId) },
+
+  // R2 storage routes
+  { method: 'GET', pattern: /^\/api\/r2\/files$/, handler: handleListFiles },
+  { method: 'GET', pattern: /^\/api\/r2\/files\/(.+)$/, handler: (req, env, match, reqId) => handleGetFile(req, env, match[1], reqId) },
+  { method: 'PUT', pattern: /^\/api\/r2\/files\/(.+)$/, handler: (req, env, match, reqId) => handleUploadFile(req, env, match[1], reqId) },
+  { method: 'DELETE', pattern: /^\/api\/r2\/files\/(.+)$/, handler: (req, env, match, reqId) => handleDeleteFile(req, env, match[1], reqId) },
+  { method: 'HEAD', pattern: /^\/api\/r2\/files\/(.+)$/, handler: (req, env, match, reqId) => handleHeadFile(req, env, match[1], reqId) },
+];
 
 /**
- * Main Worker export
+ * Find matching route
+ */
+function findRoute(method: string, path: string): { handler: RouteHandler; match: RegExpMatchArray } | null {
+  for (const route of routes) {
+    if (route.method === method) {
+      const match = path.match(route.pattern);
+      if (match) {
+        return { handler: route.handler, match };
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Main fetch handler
  */
 export default {
-  async fetch(
-    request: Request,
-    env: Env,
-    ctx: ExecutionContext
-  ): Promise<Response> {
-    return router.handle(request, env, ctx);
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    const url = new URL(request.url);
+    const method = request.method;
+    const path = url.pathname;
+    const requestId = generateId();
+    const logger = createLogger(env, 'worker');
+    const origin = request.headers.get('Origin') || undefined;
+
+    // Log incoming request
+    logger.info('Incoming request', {
+      method,
+      path,
+      requestId,
+      origin,
+    });
+
+    try {
+      // Handle CORS preflight
+      if (method === 'OPTIONS') {
+        return corsPreflightResponse(origin, env.CORS_ALLOWED_ORIGINS);
+      }
+
+      // Rate limiting (skip for health check)
+      if (path !== '/api/health') {
+        const rateLimiter = createRateLimiter(env.CACHE, 100, 60000);
+        const identifier = getRequestIdentifier(request);
+        const rateLimit = await rateLimiter.checkLimit(identifier);
+
+        if (rateLimit.exceeded) {
+          const response = ErrorResponses.rateLimitExceeded(
+            'Rate limit exceeded. Please try again later.',
+            requestId,
+            origin,
+            env.CORS_ALLOWED_ORIGINS
+          );
+          addRateLimitHeaders(response.headers, rateLimit);
+          return response;
+        }
+
+        // Add rate limit headers to response (will be added later)
+        ctx.passThroughOnException();
+      }
+
+      // Find matching route
+      const route = findRoute(method, path);
+
+      if (!route) {
+        // Default route - return API documentation
+        if (path === '/' || path === '/api') {
+          return new Response(
+            JSON.stringify({
+              name: 'Cloudflare Workers MVP Template',
+              version: '1.0.0',
+              endpoints: {
+                health: 'GET /api/health',
+                ai: {
+                  chat: 'POST /api/ai/chat',
+                  embed: 'POST /api/ai/embed',
+                  stream: 'POST /api/ai/stream',
+                },
+                database: {
+                  list: 'GET /api/db/items',
+                  get: 'GET /api/db/items/:id',
+                  create: 'POST /api/db/items',
+                  update: 'PUT /api/db/items/:id',
+                  delete: 'DELETE /api/db/items/:id',
+                },
+                cache: {
+                  list: 'GET /api/kv/cache',
+                  get: 'GET /api/kv/cache/:key',
+                  set: 'PUT /api/kv/cache/:key',
+                  delete: 'DELETE /api/kv/cache/:key',
+                },
+                storage: {
+                  list: 'GET /api/r2/files',
+                  get: 'GET /api/r2/files/:key',
+                  upload: 'PUT /api/r2/files/:key',
+                  delete: 'DELETE /api/r2/files/:key',
+                  head: 'HEAD /api/r2/files/:key',
+                },
+              },
+              documentation: 'See README.md for full API documentation',
+            }, null, 2),
+            {
+              headers: {
+                'Content-Type': 'application/json',
+                'Access-Control-Allow-Origin': origin || '*',
+              },
+            }
+          );
+        }
+
+        return ErrorResponses.notFound(
+          'Endpoint not found',
+          requestId,
+          origin,
+          env.CORS_ALLOWED_ORIGINS
+        );
+      }
+
+      // Execute route handler
+      const response = await route.handler(request, env, route.match, requestId);
+
+      // Add request ID header
+      response.headers.set('X-Request-ID', requestId);
+
+      logger.info('Request completed', {
+        requestId,
+        status: response.status,
+      });
+
+      return response;
+    } catch (error: any) {
+      logger.error('Unhandled error', error, { requestId });
+
+      return ErrorResponses.internalError(
+        'An unexpected error occurred',
+        env.ENVIRONMENT === 'development' ? error.message : undefined,
+        requestId,
+        origin,
+        env.CORS_ALLOWED_ORIGINS
+      );
+    }
   },
 };
