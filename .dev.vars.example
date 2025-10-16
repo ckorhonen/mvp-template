@@ -1,0 +1,53 @@
+# ============================================
+# Cloudflare Workers Local Development Variables
+# ============================================
+# Copy this file to .dev.vars for local Wrangler development
+# These variables are used when running: wrangler dev
+# 
+# IMPORTANT: .dev.vars should be added to .gitignore
+# For production secrets, use: wrangler secret put <KEY>
+
+# ============================================
+# OpenAI API Configuration
+# ============================================
+OPENAI_API_KEY=sk-your-openai-api-key-here
+
+# ============================================
+# AI Gateway Configuration (Optional)
+# ============================================
+# If using Cloudflare AI Gateway
+AI_GATEWAY_ID=your-gateway-id
+AI_GATEWAY_URL=https://gateway.ai.cloudflare.com/v1
+
+# ============================================
+# Environment Configuration
+# ============================================
+ENVIRONMENT=development
+API_BASE_URL=http://localhost:8787
+
+# ============================================
+# CORS Configuration
+# ============================================
+ALLOWED_ORIGINS=http://localhost:5173,http://localhost:3000
+
+# ============================================
+# Feature Flags
+# ============================================
+ENABLE_AI_FEATURES=true
+ENABLE_RATE_LIMITING=false
+
+# ============================================
+# Additional Secrets
+# ============================================
+# Add any other secrets your application needs
+# STRIPE_SECRET_KEY=sk_test_...
+# JWT_SECRET=your-jwt-secret
+# WEBHOOK_SECRET=your-webhook-secret
+
+# ============================================
+# Notes
+# ============================================
+# - Variables defined here are available via env.KEY_NAME in your worker
+# - These override variables defined in wrangler.toml [vars] section
+# - For production, use: wrangler secret put KEY_NAME
+# - Never commit .dev.vars to version control
