@@ -1,110 +1,175 @@
-import { Env, AIGatewayRequest, AIGatewayResponse, WorkerError } from '../types';
-
 /**
- * Cloudflare AI Gateway integration for OpenAI
- * https://developers.cloudflare.com/ai-gateway/
+ * Cloudflare AI Gateway integration utilities
+ * Provides OpenAI integration through Cloudflare AI Gateway with caching and rate limiting
  */
 
-export class AIGateway {
-  private readonly baseUrl: string;
+import type { Env } from '../types';
+import { ExternalServiceError } from './errors';
 
-  constructor(
-    private env: Env
-  ) {
-    this.baseUrl = `https://gateway.ai.cloudflare.com/v1/${env.CLOUDFLARE_ACCOUNT_ID}/${env.AI_GATEWAY_ID}/openai`;
+interface OpenAIMessage {
+  role: 'system' | 'user' | 'assistant';
+  content: string;
+}
+
+interface OpenAICompletionRequest {
+  model: string;
+  messages: OpenAIMessage[];
+  temperature?: number;
+  max_tokens?: number;
+  stream?: boolean;
+  [key: string]: unknown;
+}
+
+interface OpenAICompletionResponse {
+  id: string;
+  object: string;
+  created: number;
+  model: string;
+  choices: Array<{
+    index: number;
+    message: OpenAIMessage;
+    finish_reason: string;
+  }>;
+  usage: {
+    prompt_tokens: number;
+    completion_tokens: number;
+    total_tokens: number;
+  };
+}
+
+/**
+ * AI Gateway client for OpenAI
+ */
+export class AIGatewayClient {
+  private gatewayUrl: string;
+  private apiKey: string;
+
+  constructor(env: Env) {
+    if (!env.AI_GATEWAY_ID || !env.OPENAI_API_KEY) {
+      throw new Error('AI_GATEWAY_ID and OPENAI_API_KEY must be configured');
+    }
+    
+    // Construct AI Gateway URL: gateway.ai.cloudflare.com/v1/{account_id}/{gateway_id}/openai
+    this.gatewayUrl = `https://gateway.ai.cloudflare.com/v1/${env.CLOUDFLARE_ACCOUNT_ID}/${env.AI_GATEWAY_ID}/openai`;
+    this.apiKey = env.OPENAI_API_KEY;
   }
 
   /**
-   * Send a chat completion request through AI Gateway
+   * Create a chat completion
    */
-  async chatCompletion(
-    request: AIGatewayRequest
-  ): Promise<AIGatewayResponse> {
+  async createChatCompletion(
+    request: OpenAICompletionRequest,
+    options?: { cache?: boolean; cacheTtl?: number }
+  ): Promise<OpenAICompletionResponse> {
     try {
-      const response = await fetch(`${this.baseUrl}/chat/completions`, {
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${this.apiKey}`,
+      };
+
+      // Add cache headers if requested
+      if (options?.cache) {
+        headers['cf-aig-cache-ttl'] = String(options.cacheTtl || 3600);
+      }
+
+      const response = await fetch(`${this.gatewayUrl}/chat/completions`, {
         method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${this.env.OPENAI_API_KEY}`,
-          'Content-Type': 'application/json',
-        },
+        headers,
         body: JSON.stringify(request),
       });
 
       if (!response.ok) {
         const error = await response.text();
-        throw new WorkerError(
-          `AI Gateway request failed: ${error}`,
-          response.status,
-          'AI_GATEWAY_ERROR',
-          { response: error }
-        );
+        throw new ExternalServiceError('OpenAI', {
+          status: response.status,
+          error,
+        });
       }
 
-      return await response.json() as AIGatewayResponse;
+      return await response.json() as OpenAICompletionResponse;
     } catch (error) {
-      if (error instanceof WorkerError) {
+      if (error instanceof ExternalServiceError) {
         throw error;
       }
-      throw new WorkerError(
-        'Failed to communicate with AI Gateway',
-        500,
-        'AI_GATEWAY_CONNECTION_ERROR',
-        { originalError: error }
-      );
+      throw new ExternalServiceError('OpenAI', error);
     }
   }
 
   /**
-   * Send a streaming chat completion request
+   * Create a streaming chat completion
    */
-  async chatCompletionStream(
-    request: AIGatewayRequest
+  async createStreamingChatCompletion(
+    request: OpenAICompletionRequest
   ): Promise<ReadableStream> {
-    const response = await fetch(`${this.baseUrl}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${this.env.OPENAI_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ ...request, stream: true }),
-    });
+    try {
+      const response = await fetch(`${this.gatewayUrl}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${this.apiKey}`,
+        },
+        body: JSON.stringify({ ...request, stream: true }),
+      });
 
-    if (!response.ok) {
-      throw new WorkerError(
-        'AI Gateway streaming request failed',
-        response.status,
-        'AI_GATEWAY_STREAM_ERROR'
-      );
+      if (!response.ok) {
+        const error = await response.text();
+        throw new ExternalServiceError('OpenAI', {
+          status: response.status,
+          error,
+        });
+      }
+
+      if (!response.body) {
+        throw new ExternalServiceError('OpenAI', 'No response body');
+      }
+
+      return response.body;
+    } catch (error) {
+      if (error instanceof ExternalServiceError) {
+        throw error;
+      }
+      throw new ExternalServiceError('OpenAI', error);
     }
-
-    return response.body!;
   }
 
   /**
-   * Generate embeddings through AI Gateway
+   * Simple text completion helper
    */
-  async createEmbedding(
-    input: string | string[],
-    model: string = 'text-embedding-ada-002'
-  ): Promise<number[][]> {
-    const response = await fetch(`${this.baseUrl}/embeddings`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${this.env.OPENAI_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ input, model }),
-    });
-
-    if (!response.ok) {
-      throw new WorkerError(
-        'AI Gateway embeddings request failed',
-        response.status,
-        'AI_GATEWAY_EMBEDDINGS_ERROR'
-      );
+  async complete(
+    prompt: string,
+    systemPrompt?: string,
+    options?: {
+      model?: string;
+      temperature?: number;
+      maxTokens?: number;
+      cache?: boolean;
     }
+  ): Promise<string> {
+    const messages: OpenAIMessage[] = [];
+    
+    if (systemPrompt) {
+      messages.push({ role: 'system', content: systemPrompt });
+    }
+    
+    messages.push({ role: 'user', content: prompt });
 
-    const data = await response.json() as any;
-    return data.data.map((item: any) => item.embedding);
+    const response = await this.createChatCompletion(
+      {
+        model: options?.model || 'gpt-3.5-turbo',
+        messages,
+        temperature: options?.temperature || 0.7,
+        max_tokens: options?.maxTokens || 500,
+      },
+      { cache: options?.cache }
+    );
+
+    return response.choices[0]?.message?.content || '';
   }
+}
+
+/**
+ * Helper to create AI Gateway client
+ */
+export function createAIGatewayClient(env: Env): AIGatewayClient {
+  return new AIGatewayClient(env);
 }

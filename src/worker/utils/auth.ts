@@ -2,117 +2,153 @@
  * Authentication and authorization utilities
  */
 
-import { Env, User } from '../types';
+import type { KVNamespace } from '@cloudflare/workers-types';
+import { AuthenticationError, AuthorizationError } from './errors';
+import { extractBearerToken } from './validation';
 
-/**
- * Simple JWT-like token generation (for demo purposes)
- * In production, use a proper JWT library
- */
-export async function generateToken(payload: any, secret: string): Promise<string> {
-  const header = btoa(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
-  const body = btoa(JSON.stringify(payload));
-  const signature = await sign(`${header}.${body}`, secret);
-  return `${header}.${body}.${signature}`;
+interface Session {
+  userId: string;
+  email?: string;
+  role?: string;
+  createdAt: number;
+  expiresAt: number;
+  [key: string]: unknown;
 }
 
 /**
- * Verify and decode a token
+ * Session manager using KV storage
  */
-export async function verifyToken(token: string, secret: string): Promise<any> {
-  try {
-    const [header, body, signature] = token.split('.');
-    const expectedSignature = await sign(`${header}.${body}`, secret);
-    
-    if (signature !== expectedSignature) {
-      throw new Error('Invalid signature');
+export class SessionManager {
+  constructor(
+    private kv: KVNamespace,
+    private ttlSeconds: number = 86400 // 24 hours default
+  ) {}
+
+  /**
+   * Create a new session
+   */
+  async create(userId: string, data: Partial<Session> = {}): Promise<string> {
+    const sessionId = this.generateSessionId();
+    const now = Date.now();
+
+    const session: Session = {
+      userId,
+      ...data,
+      createdAt: now,
+      expiresAt: now + this.ttlSeconds * 1000,
+    };
+
+    await this.kv.put(`session:${sessionId}`, JSON.stringify(session), {
+      expirationTtl: this.ttlSeconds,
+    });
+
+    return sessionId;
+  }
+
+  /**
+   * Get session by ID
+   */
+  async get(sessionId: string): Promise<Session | null> {
+    const data = await this.kv.get(`session:${sessionId}`);
+    if (!data) {
+      return null;
     }
 
-    return JSON.parse(atob(body));
-  } catch (error) {
-    throw new Error('Invalid token');
+    const session = JSON.parse(data) as Session;
+
+    // Check if expired
+    if (Date.now() >= session.expiresAt) {
+      await this.delete(sessionId);
+      return null;
+    }
+
+    return session;
+  }
+
+  /**
+   * Delete a session
+   */
+  async delete(sessionId: string): Promise<void> {
+    await this.kv.delete(`session:${sessionId}`);
+  }
+
+  /**
+   * Refresh session TTL
+   */
+  async refresh(sessionId: string): Promise<void> {
+    const session = await this.get(sessionId);
+    if (!session) {
+      throw new AuthenticationError('Session not found');
+    }
+
+    session.expiresAt = Date.now() + this.ttlSeconds * 1000;
+    await this.kv.put(`session:${sessionId}`, JSON.stringify(session), {
+      expirationTtl: this.ttlSeconds,
+    });
+  }
+
+  /**
+   * Generate a secure session ID
+   */
+  private generateSessionId(): string {
+    const array = new Uint8Array(32);
+    crypto.getRandomValues(array);
+    return Array.from(array, byte => byte.toString(16).padStart(2, '0')).join('');
   }
 }
 
 /**
- * Create a signature using Web Crypto API
+ * Extract and validate session from request
  */
-async function sign(data: string, secret: string): Promise<string> {
-  const encoder = new TextEncoder();
-  const keyData = encoder.encode(secret);
-  const messageData = encoder.encode(data);
-
-  const key = await crypto.subtle.importKey(
-    'raw',
-    keyData,
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign']
-  );
-
-  const signature = await crypto.subtle.sign('HMAC', key, messageData);
-  return btoa(String.fromCharCode(...new Uint8Array(signature)));
-}
-
-/**
- * Hash a password using Web Crypto API
- */
-export async function hashPassword(password: string): Promise<string> {
-  const encoder = new TextEncoder();
-  const data = encoder.encode(password);
-  const hash = await crypto.subtle.digest('SHA-256', data);
-  return btoa(String.fromCharCode(...new Uint8Array(hash)));
-}
-
-/**
- * Verify a password against a hash
- */
-export async function verifyPassword(password: string, hash: string): Promise<boolean> {
-  const passwordHash = await hashPassword(password);
-  return passwordHash === hash;
-}
-
-/**
- * Extract bearer token from Authorization header
- */
-export function extractBearerToken(request: Request): string | null {
-  const authHeader = request.headers.get('Authorization');
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return null;
-  }
-  return authHeader.slice(7);
-}
-
-/**
- * Authenticate request and extract user
- */
-export async function authenticateRequest(request: Request, env: Env): Promise<User | null> {
+export async function getSession(
+  request: Request,
+  sessionManager: SessionManager
+): Promise<Session> {
   const token = extractBearerToken(request);
   if (!token) {
-    return null;
+    throw new AuthenticationError('No authentication token provided');
   }
 
-  try {
-    const payload = await verifyToken(token, env.JWT_SECRET);
-    // In a real app, you'd fetch the user from the database
-    return payload.user as User;
-  } catch (error) {
-    return null;
+  const session = await sessionManager.get(token);
+  if (!session) {
+    throw new AuthenticationError('Invalid or expired session');
+  }
+
+  return session;
+}
+
+/**
+ * Check if session has required role
+ */
+export function requireRole(session: Session, ...roles: string[]): void {
+  if (!session.role || !roles.includes(session.role)) {
+    throw new AuthorizationError(
+      `Required role: ${roles.join(' or ')}`
+    );
   }
 }
 
 /**
- * Check if user has required role
+ * Simple API key validation
  */
-export function hasRole(user: User | null, requiredRole: string | string[]): boolean {
-  if (!user) return false;
+export function validateApiKey(request: Request, validKeys: string[]): void {
+  const apiKey = request.headers.get('X-API-Key');
   
-  const roles = Array.isArray(requiredRole) ? requiredRole : [requiredRole];
-  return roles.includes(user.role);
+  if (!apiKey) {
+    throw new AuthenticationError('API key required');
+  }
+  
+  if (!validKeys.includes(apiKey)) {
+    throw new AuthenticationError('Invalid API key');
+  }
 }
 
 /**
- * Generate a random ID
+ * Generate a secure API key
  */
-export function generateId(): string {
-  return crypto.randomUUID();
+export function generateApiKey(prefix: string = 'sk'): string {
+  const array = new Uint8Array(32);
+  crypto.getRandomValues(array);
+  const key = Array.from(array, byte => byte.toString(16).padStart(2, '0')).join('');
+  return `${prefix}_${key}`;
 }
