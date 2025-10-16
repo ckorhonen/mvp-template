@@ -1,74 +1,72 @@
-# 🚀 MVP Template
+# 🚀 Cloudflare Workers MVP Template
 
-> Rapid MVP Development Template with TypeScript, React, and Cloudflare Workers
-
-A production-ready template for building Minimum Viable Products (MVPs) quickly with modern web technologies, comprehensive testing, and automated CI/CD pipelines.
-
-## 📋 Project Description
-
-This template provides a complete development environment for building full-stack web applications with:
-
-- **Frontend**: React 18 with TypeScript, bundled with Vite for lightning-fast development
-- **Backend**: Cloudflare Workers for serverless API endpoints with global edge deployment
-- **Testing**: Jest and React Testing Library for comprehensive test coverage
-- **CI/CD**: GitHub Actions workflows for automated testing and deployment
-- **Code Quality**: ESLint, Prettier, and Husky pre-commit hooks ensure consistent code quality
+A comprehensive, production-ready template for building MVPs with Cloudflare Workers, featuring AI Gateway, D1 Database, KV, R2, and more.
 
 ## ✨ Features
 
-- ✅ **TypeScript** - Full type safety with strict mode enabled
-- ✅ **React 18** - Latest React features with Vite for instant HMR
-- ✅ **Cloudflare Workers** - Serverless backend deployed to 300+ edge locations
-- ✅ **ESLint + Prettier** - Automatic code formatting and linting
-- ✅ **Jest Testing** - Unit and integration tests with coverage reporting
-- ✅ **GitHub Actions** - Automated CI/CD pipeline for testing and deployment
-- ✅ **Pre-commit Hooks** - Prevent bad commits with Husky and lint-staged
-- ✅ **Path Aliases** - Clean imports with `@/` prefix
-- ✅ **Security Scanning** - Automated dependency vulnerability checks
+### Cloudflare Services Integration
+- 🤖 **AI Gateway** - OpenAI integration with caching and rate limiting
+- 🗄️ **D1 Database** - SQLite database with migrations and type-safe queries
+- 📦 **KV Storage** - Key-value storage for caching and sessions
+- 🪣 **R2 Storage** - Object storage for files and assets
+- 📊 **Analytics Engine** - Real-time analytics and metrics
+- 🔄 **Queues** - Background job processing
+- 🎯 **Durable Objects** - Stateful coordination (rate limiting, sessions)
 
-## 🛠️ Tech Stack
+### Developer Experience
+- ⚡ **TypeScript** - Full type safety throughout
+- 🧪 **Jest** - Comprehensive test suite
+- 🔍 **ESLint & Prettier** - Code quality and formatting
+- 🚦 **GitHub Actions** - CI/CD pipelines
+- 📝 **Comprehensive Documentation** - Get started quickly
 
-### Frontend
-- **React 18** - UI library
-- **TypeScript 5** - Type-safe JavaScript
-- **Vite 5** - Fast build tool and dev server
-- **CSS3** - Custom styling (easily swap with Tailwind/Styled Components)
+### Production Ready
+- 🔒 **Rate Limiting** - Protect your APIs
+- 🌐 **CORS Support** - Cross-origin requests
+- ✅ **Input Validation** - Sanitize and validate inputs
+- 📈 **Error Handling** - Robust error management
+- 🎨 **Standardized Responses** - Consistent API responses
 
-### Backend
-- **Cloudflare Workers** - Edge computing platform
-- **Wrangler** - CLI for Cloudflare Workers development
+## 🏗️ Architecture
 
-### Testing
-- **Jest** - Testing framework
-- **React Testing Library** - React component testing
-- **@testing-library/jest-dom** - Custom Jest matchers
+```
+├── src/
+│   ├── worker/
+│   │   ├── index.ts           # Main worker entry point
+│   │   ├── types.ts           # TypeScript type definitions
+│   │   ├── routes/            # API route handlers
+│   │   │   ├── ai.ts          # AI Gateway routes
+│   │   │   ├── database.ts    # D1 database routes
+│   │   │   └── storage.ts     # KV/R2 storage routes
+│   │   ├── services/          # Business logic services
+│   │   │   ├── ai-gateway.ts  # AI Gateway service
+│   │   │   └── d1-database.ts # D1 database service
+│   │   └── utils/             # Utility functions
+│   │       ├── cache.ts       # Cache management
+│   │       ├── rate-limit.ts  # Rate limiting
+│   │       ├── response.ts    # Response helpers
+│   │       └── validation.ts  # Input validation
+│   └── (React app files)       # Frontend application
+├── migrations/                 # D1 database migrations
+├── .github/workflows/          # CI/CD workflows
+└── wrangler.toml              # Cloudflare Workers config
+```
 
-### Code Quality
-- **ESLint** - Linting for TypeScript and React
-- **Prettier** - Code formatting
-- **Husky** - Git hooks
-- **lint-staged** - Run linters on staged files
-
-### CI/CD
-- **GitHub Actions** - Automated workflows
-- **Codecov** - Code coverage reporting
-- **Snyk** - Security vulnerability scanning
-
-## 🚀 Setup Instructions
+## 🚀 Quick Start
 
 ### Prerequisites
 
-- **Node.js** 18.x or 20.x
-- **npm** 9.x or higher
-- **Git** 2.x or higher
-- **Cloudflare Account** (free tier available)
+- Node.js 20 or higher
+- npm or yarn
+- Cloudflare account ([sign up](https://dash.cloudflare.com/sign-up))
+- Wrangler CLI (`npm install -g wrangler`)
 
 ### Installation
 
-1. **Clone or use this template**
+1. **Clone the repository**
    ```bash
-   git clone https://github.com/ckorhonen/mvp-template.git my-mvp
-   cd my-mvp
+   git clone https://github.com/ckorhonen/mvp-template.git
+   cd mvp-template
    ```
 
 2. **Install dependencies**
@@ -76,205 +74,360 @@ This template provides a complete development environment for building full-stac
    npm install
    ```
 
-3. **Set up Git hooks**
+3. **Login to Cloudflare**
    ```bash
-   npm run prepare
+   wrangler login
    ```
 
-4. **Configure Cloudflare Workers** (optional)
-   - Log in to Cloudflare: `npx wrangler login`
-   - Update `wrangler.toml` with your account ID
-   - Find your account ID in the Cloudflare dashboard
+4. **Create required resources**
+   ```bash
+   # Create D1 database
+   wrangler d1 create mvp-database
+
+   # Create KV namespaces
+   wrangler kv:namespace create CACHE
+   wrangler kv:namespace create SESSIONS
+   wrangler kv:namespace create CONFIG
+
+   # Create R2 buckets
+   wrangler r2 bucket create mvp-assets
+   wrangler r2 bucket create mvp-uploads
+   wrangler r2 bucket create mvp-backups
+   ```
+
+5. **Update configuration**
+   
+   Copy `.env.example` to `.env` and update with your values:
+   ```bash
+   cp .env.example .env
+   ```
+
+   Update `wrangler.toml` with the IDs from step 4.
+
+6. **Run database migrations**
+   ```bash
+   wrangler d1 execute DB --file=migrations/0001_initial_schema.sql
+   wrangler d1 execute DB --file=migrations/0002_sample_data.sql
+   ```
+
+7. **Start development server**
+   ```bash
+   # Start the worker
+   npm run worker:dev
+
+   # In another terminal, start the frontend
+   npm run dev
+   ```
+
+## 📚 Documentation
+
+### Configuration
+
+#### Environment Variables
+
+See [`.env.example`](.env.example) for all available environment variables.
+
+Key variables:
+- `CLOUDFLARE_ACCOUNT_ID` - Your Cloudflare account ID
+- `OPENAI_API_KEY` - OpenAI API key for AI Gateway
+- `AI_GATEWAY_ID` - Your Cloudflare AI Gateway ID
+
+#### Wrangler Configuration
+
+See [`wrangler.toml`](wrangler.toml) for Cloudflare Workers configuration.
+
+Key sections:
+- `[vars]` - Environment-specific variables
+- `[[kv_namespaces]]` - KV namespace bindings
+- `[[r2_buckets]]` - R2 bucket bindings
+- `[[d1_databases]]` - D1 database bindings
+
+### API Routes
+
+#### AI Gateway Routes
+
+**POST /api/ai/chat**
+```json
+{
+  "message": "What is Cloudflare?",
+  "systemPrompt": "You are a helpful assistant.",
+  "temperature": 0.7,
+  "maxTokens": 1000
+}
+```
+
+**POST /api/ai/stream**
+```json
+{
+  "messages": [
+    { "role": "user", "content": "Tell me a story" }
+  ],
+  "model": "gpt-4o-mini"
+}
+```
+
+**GET /api/ai/models**
+
+Returns available AI models.
+
+#### Database Routes
+
+**POST /api/users**
+```json
+{
+  "email": "user@example.com",
+  "name": "John Doe"
+}
+```
+
+**GET /api/users/:id**
+
+Get a user by ID.
+
+**GET /api/users?page=1&per_page=10**
+
+List users with pagination.
+
+**PUT /api/users/:id**
+```json
+{
+  "name": "Jane Doe"
+}
+```
+
+**DELETE /api/users/:id**
+
+Delete a user.
+
+#### Storage Routes
+
+**GET /api/cache/:key**
+
+Get a cached value.
+
+**PUT /api/cache/:key**
+```json
+{
+  "value": "any json value",
+  "ttl": 3600
+}
+```
+
+**DELETE /api/cache/:key**
+
+Delete a cached value.
+
+**POST /api/uploads**
+
+Upload a file (multipart/form-data).
+
+**GET /api/uploads/:key**
+
+Download a file.
+
+**DELETE /api/uploads/:key**
+
+Delete a file.
+
+**GET /api/uploads?prefix=uploads/&limit=100**
+
+List uploaded files.
+
+### Services
+
+#### AI Gateway Service
+
+```typescript
+import { createAIGateway } from './services/ai-gateway';
+
+const ai = createAIGateway(env);
+
+// Simple completion
+const response = await ai.complete('What is Cloudflare?');
+
+// Chat with system prompt
+const chat = await ai.complete('Explain Cloudflare Workers', {
+  systemPrompt: 'You are a technical expert.',
+  temperature: 0.8,
+  maxTokens: 500,
+});
+
+// Full chat completion
+const completion = await ai.createChatCompletion({
+  model: 'gpt-4o-mini',
+  messages: [
+    { role: 'system', content: 'You are helpful.' },
+    { role: 'user', content: 'Hello!' },
+  ],
+});
+```
+
+#### D1 Database Service
+
+```typescript
+import { createD1Service } from './services/d1-database';
+
+const db = createD1Service(env);
+
+// Query
+const users = await db.query('SELECT * FROM users WHERE email = ?', [email]);
+
+// Insert
+const userId = await db.insert('users', {
+  email: 'user@example.com',
+  name: 'John Doe',
+});
+
+// Update
+const updated = await db.update('users', { name: 'Jane Doe' }, {
+  column: 'id',
+  value: userId,
+});
+
+// Delete
+const deleted = await db.delete('users', { column: 'id', value: userId });
+```
+
+#### Cache Manager
+
+```typescript
+import { createCacheManager } from './utils/cache';
+
+const cache = createCacheManager(env);
+
+// Get or set pattern
+const data = await cache.getOrSet('expensive-data', async () => {
+  // Compute expensive data
+  return await fetchExpensiveData();
+}, { ttl: 3600 });
+```
+
+#### Rate Limiter
+
+```typescript
+import { createRateLimiter, getClientIdentifier } from './utils/rate-limit';
+
+const rateLimiter = createRateLimiter(env, {
+  limit: 100,
+  window: 60, // 1 minute
+});
+
+const identifier = getClientIdentifier(request);
+const result = await rateLimiter.check(identifier);
+
+if (!result.allowed) {
+  return rateLimitResponse(result.reset - Math.floor(Date.now() / 1000));
+}
+```
+
+## 🧪 Testing
+
+```bash
+# Run all tests
+npm test
+
+# Run tests in watch mode
+npm run test:watch
+
+# Run tests with coverage
+npm run test:coverage
+```
+
+## 🚢 Deployment
 
 ### Development
-
-**Start the development server:**
-```bash
-npm run dev
-```
-Open [http://localhost:3000](http://localhost:3000) in your browser.
-
-**Start the Cloudflare Worker locally:**
-```bash
-npm run worker:dev
-```
-Worker will be available at [http://localhost:8787](http://localhost:8787)
-
-**Run tests:**
-```bash
-npm test                 # Run once
-npm run test:watch      # Watch mode
-npm run test:coverage   # With coverage
-```
-
-**Linting and formatting:**
-```bash
-npm run lint            # Check for issues
-npm run lint:fix        # Fix issues
-npm run format          # Format code
-npm run format:check    # Check formatting
-```
-
-**Type checking:**
-```bash
-npm run type-check
-```
-
-## 📦 Build
-
-**Build for production:**
-```bash
-npm run build
-```
-
-Output will be in the `dist/` directory.
-
-**Preview production build:**
-```bash
-npm run preview
-```
-
-## 🌍 Deployment
-
-### Cloudflare Workers
-
-#### One-time Setup
-
-1. **Create a Cloudflare account** at [dash.cloudflare.com](https://dash.cloudflare.com)
-
-2. **Get your Account ID**
-   - Go to Workers & Pages
-   - Copy your Account ID
-   - Update `wrangler.toml`:
-     ```toml
-     account_id = "your-account-id-here"
-     ```
-
-3. **Get API Token**
-   - Go to Profile → API Tokens
-   - Create Token → Edit Cloudflare Workers
-   - Copy the token
-
-4. **Add secrets to GitHub**
-   - Go to your repo → Settings → Secrets and variables → Actions
-   - Add `CLOUDFLARE_API_TOKEN`
-   - Add `CLOUDFLARE_ACCOUNT_ID`
-
-#### Deploy
-
-**Manual deployment:**
 ```bash
 npm run worker:deploy
 ```
 
-**Automatic deployment:**
-Push to `main` branch - GitHub Actions will automatically deploy
-
-### Other Platforms
-
-#### Vercel
+### Staging
 ```bash
-npm install -g vercel
-vercel
+wrangler deploy --env staging
 ```
 
-#### Netlify
+### Production
 ```bash
-npm install -g netlify-cli
-netlify deploy
+wrangler deploy --env production
 ```
 
-#### GitHub Pages
-Update `vite.config.ts` with your base path and run:
+### GitHub Actions
+
+The repository includes comprehensive CI/CD workflows:
+
+- **CI/CD Pipeline** - Runs on every push and PR
+  - Linting and formatting checks
+  - Unit tests with coverage
+  - Security audits
+  - Automated deployments to dev/staging/production
+
+- **Database Migrations** - Manual workflow for running migrations
+
+See [`.github/workflows/`](.github/workflows/) for details.
+
+## 📖 Additional Documentation
+
+- [Database Migrations](migrations/README.md)
+- [Environment Configuration](.env.example)
+- [Contributing](CONTRIBUTING.md)
+- [Changelog](CHANGELOG.md)
+
+## 🔧 Development
+
+### Project Scripts
+
 ```bash
-npm run build
+# Development
+npm run dev              # Start frontend dev server
+npm run worker:dev       # Start worker dev server
+
+# Build
+npm run build            # Build frontend
+npm run build:worker     # Build worker
+
+# Testing
+npm test                 # Run tests
+npm run test:watch       # Run tests in watch mode
+npm run test:coverage    # Run tests with coverage
+
+# Code Quality
+npm run lint             # Run ESLint
+npm run lint:fix         # Fix ESLint issues
+npm run format           # Format code with Prettier
+npm run format:check     # Check code formatting
+npm run type-check       # TypeScript type checking
+
+# Deployment
+npm run worker:deploy    # Deploy worker
 ```
-Then deploy the `dist/` directory.
+
+### Environment Setup
+
+1. Copy `.env.example` to `.env`
+2. Update with your Cloudflare credentials
+3. Create required resources (see Quick Start)
+4. Run migrations
 
 ## 🤝 Contributing
 
-Contributions are welcome! Please follow these guidelines:
-
-1. **Fork the repository**
-
-2. **Create a feature branch**
-   ```bash
-   git checkout -b feature/amazing-feature
-   ```
-
-3. **Make your changes**
-   - Write tests for new features
-   - Follow the existing code style
-   - Update documentation as needed
-
-4. **Run tests and checks**
-   ```bash
-   npm run type-check
-   npm run lint
-   npm run test
-   ```
-
-5. **Commit your changes**
-   ```bash
-   git commit -m 'feat: add amazing feature'
-   ```
-   Follow [Conventional Commits](https://www.conventionalcommits.org/) format
-
-6. **Push to your fork**
-   ```bash
-   git push origin feature/amazing-feature
-   ```
-
-7. **Open a Pull Request**
-
-### Commit Message Format
-
-- `feat:` - New feature
-- `fix:` - Bug fix
-- `docs:` - Documentation changes
-- `style:` - Code style changes (formatting, etc.)
-- `refactor:` - Code refactoring
-- `test:` - Adding or updating tests
-- `chore:` - Maintenance tasks
+Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for details.
 
 ## 📄 License
 
-MIT License
-
-Copyright (c) 2024 Chris Korhonen
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+MIT License - see [LICENSE](LICENSE) for details.
 
 ## 🙏 Acknowledgments
 
-- React Team for the amazing library
-- Cloudflare for Workers platform
-- Vite for the blazing-fast build tool
-- All open source contributors
+- Built with [Cloudflare Workers](https://workers.cloudflare.com/)
+- Powered by [React](https://react.dev/) and [TypeScript](https://www.typescriptlang.org/)
+- Styled with best practices from the Cloudflare community
 
 ## 📞 Support
 
-- **Issues**: [GitHub Issues](https://github.com/ckorhonen/mvp-template/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/ckorhonen/mvp-template/discussions)
+For issues and questions:
+- [GitHub Issues](https://github.com/ckorhonen/mvp-template/issues)
+- [Cloudflare Workers Discord](https://discord.gg/cloudflaredev)
+- [Cloudflare Community](https://community.cloudflare.com/)
 
 ---
 
-**Built with ❤️ for rapid MVP development**
-
-**Happy Building! 🚀**
+Built with ❤️ by [Chris Korhonen](https://github.com/ckorhonen)
