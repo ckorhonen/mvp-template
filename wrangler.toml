@@ -1,9 +1,13 @@
+# Cloudflare Workers MVP Template Configuration
+# Updated with latest best practices for 2025
+
 name = "mvp-template"
 main = "src/worker/index.ts"
-compatibility_date = "2024-01-01"
+compatibility_date = "2025-01-01"
 compatibility_flags = ["nodejs_compat"]
 
-# Account ID - update with your Cloudflare account ID
+# Account configuration
+# Update with your Cloudflare account ID
 # account_id = "your-account-id-here"
 
 # Workers configuration
@@ -14,6 +18,7 @@ workers_dev = true
 command = "npm run build:worker"
 
 # KV Namespaces
+# For caching and session storage
 [[kv_namespaces]]
 binding = "CACHE"
 id = "your-kv-namespace-id"
@@ -25,6 +30,7 @@ id = "your-sessions-kv-id"
 preview_id = "your-preview-sessions-kv-id"
 
 # R2 Buckets
+# For static assets and user uploads
 [[r2_buckets]]
 binding = "ASSETS"
 bucket_name = "mvp-assets"
@@ -36,21 +42,35 @@ bucket_name = "mvp-uploads"
 preview_bucket_name = "mvp-uploads-preview"
 
 # D1 Databases
+# SQLite database at the edge
 [[d1_databases]]
 binding = "DB"
 database_name = "mvp-database"
 database_id = "your-d1-database-id"
-preview_database_id = "your-preview-d1-database-id"
+
+# Preview database for development
+[env.preview]
+[[env.preview.d1_databases]]
+binding = "DB"
+database_name = "mvp-database-preview"
+database_id = "your-preview-d1-database-id"
+
+# Migrations
+[migrations]
+dir = "migrations"
 
 # AI Gateway Configuration
+# Centralized AI inference with caching and analytics
 [ai]
 binding = "AI"
 
 # Analytics Engine
+# Track metrics and custom analytics
 [[analytics_engine_datasets]]
 binding = "ANALYTICS"
 
 # Queues
+# Background job processing
 [[queues.producers]]
 binding = "TASK_QUEUE"
 queue = "mvp-tasks"
@@ -59,8 +79,11 @@ queue = "mvp-tasks"
 queue = "mvp-tasks"
 max_batch_size = 10
 max_batch_timeout = 30
+max_retries = 3
+dead_letter_queue = "mvp-tasks-dlq"
 
 # Durable Objects
+# Stateful coordination primitives
 [[durable_objects.bindings]]
 name = "RATE_LIMITER"
 class_name = "RateLimiter"
@@ -70,11 +93,29 @@ script_name = "mvp-template"
 tag = "v1"
 new_classes = ["RateLimiter"]
 
-# Environment Variables (secrets should be set via wrangler secret put)
+# Environment Variables
+# Non-secret configuration
 [vars]
 ENVIRONMENT = "development"
-LOG_LEVEL = "info"
+LOG_LEVEL = "debug"
 AI_GATEWAY_ID = "your-ai-gateway-id"
+CLOUDFLARE_ACCOUNT_ID = "your-account-id"
+
+# Secrets (set via: wrangler secret put SECRET_NAME)
+# OPENAI_API_KEY - OpenAI API key for AI Gateway
+# ANTHROPIC_API_KEY - Anthropic API key for AI Gateway
+# HUGGINGFACE_API_KEY - HuggingFace API key
+# REPLICATE_API_KEY - Replicate API key
+# JWT_SECRET - Secret for JWT signing
+
+# Staging Environment
+[env.staging]
+name = "mvp-template-staging"
+route = { pattern = "staging.example.com/*", zone_name = "example.com" }
+
+[env.staging.vars]
+ENVIRONMENT = "staging"
+LOG_LEVEL = "info"
 
 # Production Environment
 [env.production]
@@ -85,16 +126,23 @@ route = { pattern = "example.com/*", zone_name = "example.com" }
 ENVIRONMENT = "production"
 LOG_LEVEL = "warn"
 
-# Staging Environment
-[env.staging]
-name = "mvp-template-staging"
-route = { pattern = "staging.example.com/*", zone_name = "example.com" }
-
-[env.staging.vars]
-ENVIRONMENT = "staging"
-LOG_LEVEL = "debug"
-
 # Observability
+# Distributed tracing and logging
 [observability]
 enabled = true
 head_sampling_rate = 1.0
+
+# Limits
+[limits]
+cpu_ms = 50
+
+# Placement
+# Control where your worker runs
+[placement]
+mode = "smart"
+
+# Workers for Platforms (if needed)
+# [dispatch_namespaces]
+# [[dispatch_namespaces.bindings]]
+# binding = "DISPATCHER"
+# namespace = "my-namespace"
