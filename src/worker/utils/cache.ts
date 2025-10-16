@@ -1,127 +1,200 @@
+// ===========================================
+// Cache Utilities
+// KV-based caching with TTL and tags
+// ===========================================
+
+import type { KVNamespace } from '@cloudflare/workers-types';
+import type { Env, CacheOptions, CacheEntry } from '../types';
+import { getLogger } from './logger';
+
+const logger = getLogger('Cache');
+
 /**
- * Cache Utilities
- * 
- * Helpers for working with KV cache, including TTL management and key generation.
+ * Cache Client
+ * Provides caching functionality with TTL and tag-based invalidation
  */
-
-import type { Env } from '../types';
-
-export interface CacheOptions {
-  ttl?: number; // Time to live in seconds
-  metadata?: Record<string, unknown>;
-}
-
-export class CacheManager {
-  constructor(private kv: KVNamespace, private keyPrefix: string = 'cache:') {}
+export class CacheClient {
+  constructor(
+    private kv: KVNamespace,
+    private defaultTtl: number = 3600 // 1 hour default
+  ) {}
 
   /**
-   * Generate a cache key with prefix
+   * Get a cached value
    */
-  private getKey(key: string): string {
-    return `${this.keyPrefix}${key}`;
-  }
-
-  /**
-   * Get a value from cache
-   */
-  async get<T>(key: string): Promise<T | null> {
-    const value = await this.kv.get(this.getKey(key), 'json');
-    return value as T | null;
-  }
-
-  /**
-   * Set a value in cache
-   */
-  async set(key: string, value: unknown, options: CacheOptions = {}): Promise<void> {
-    const { ttl = 3600, metadata } = options;
-    await this.kv.put(
-      this.getKey(key),
-      JSON.stringify(value),
-      {
-        expirationTtl: ttl,
-        metadata: metadata || {},
+  async get<T = any>(key: string): Promise<T | null> {
+    try {
+      const value = await this.kv.get(key, 'json');
+      
+      if (!value) {
+        return null;
       }
-    );
+
+      const entry = value as CacheEntry<T>;
+
+      // Check if expired (additional safety check)
+      if (entry.expiresAt && entry.expiresAt < Date.now()) {
+        await this.delete(key);
+        return null;
+      }
+
+      return entry.value;
+    } catch (error) {
+      logger.error('Cache get failed', { key, error });
+      return null; // Fail gracefully
+    }
   }
 
   /**
-   * Delete a value from cache
+   * Set a cached value
+   */
+  async set<T = any>(
+    key: string,
+    value: T,
+    options: CacheOptions = {}
+  ): Promise<void> {
+    try {
+      const ttl = options.ttl || this.defaultTtl;
+      const expiresAt = Date.now() + ttl * 1000;
+
+      const entry: CacheEntry<T> = {
+        value,
+        expiresAt,
+        tags: options.tags,
+      };
+
+      await this.kv.put(key, JSON.stringify(entry), {
+        expirationTtl: ttl,
+        metadata: { tags: options.tags || [] },
+      });
+
+      logger.debug('Cache set', { key, ttl });
+    } catch (error) {
+      logger.error('Cache set failed', { key, error });
+      // Fail gracefully - don't throw
+    }
+  }
+
+  /**
+   * Delete a cached value
    */
   async delete(key: string): Promise<void> {
-    await this.kv.delete(this.getKey(key));
+    try {
+      await this.kv.delete(key);
+      logger.debug('Cache deleted', { key });
+    } catch (error) {
+      logger.error('Cache delete failed', { key, error });
+    }
   }
 
   /**
-   * Check if a key exists in cache
+   * Get or set a cached value
    */
-  async has(key: string): Promise<boolean> {
-    const value = await this.kv.get(this.getKey(key));
-    return value !== null;
-  }
-
-  /**
-   * Get or set pattern - fetch from cache or compute and cache
-   */
-  async getOrSet<T>(
+  async getOrSet<T = any>(
     key: string,
-    fn: () => Promise<T>,
+    factory: () => Promise<T>,
     options: CacheOptions = {}
   ): Promise<T> {
     const cached = await this.get<T>(key);
+
     if (cached !== null) {
+      logger.debug('Cache hit', { key });
       return cached;
     }
 
-    const value = await fn();
+    logger.debug('Cache miss', { key });
+    const value = await factory();
     await this.set(key, value, options);
+
     return value;
   }
 
   /**
-   * Invalidate cache by pattern (list and delete)
+   * Invalidate cache by tag
    */
-  async invalidatePattern(pattern: string): Promise<number> {
-    const keys = await this.kv.list({ prefix: this.getKey(pattern) });
-    let deleted = 0;
-    
-    for (const key of keys.keys) {
-      await this.kv.delete(key.name);
-      deleted++;
+  async invalidateByTag(tag: string): Promise<number> {
+    try {
+      // List all keys (this is expensive - use sparingly)
+      const list = await this.kv.list();
+      let count = 0;
+
+      for (const key of list.keys) {
+        if (key.metadata && Array.isArray((key.metadata as any).tags)) {
+          const tags = (key.metadata as any).tags as string[];
+          if (tags.includes(tag)) {
+            await this.delete(key.name);
+            count++;
+          }
+        }
+      }
+
+      logger.info('Cache invalidated by tag', { tag, count });
+      return count;
+    } catch (error) {
+      logger.error('Cache invalidation failed', { tag, error });
+      return 0;
     }
-    
-    return deleted;
+  }
+
+  /**
+   * Clear all cache entries (use with caution)
+   */
+  async clear(): Promise<void> {
+    try {
+      const list = await this.kv.list();
+      
+      for (const key of list.keys) {
+        await this.delete(key.name);
+      }
+
+      logger.warn('Cache cleared');
+    } catch (error) {
+      logger.error('Cache clear failed', { error });
+    }
   }
 }
 
 /**
- * Create a cache manager from environment
+ * Create a cache client
  */
-export function createCacheManager(env: Env): CacheManager {
-  return new CacheManager(env.CACHE);
+export function createCacheClient(env: Env): CacheClient {
+  return new CacheClient(env.CACHE);
 }
 
 /**
- * Generate a cache key from request
+ * Generate a cache key
  */
-export function getCacheKeyFromRequest(request: Request): string {
-  const url = new URL(request.url);
-  const method = request.method;
-  const path = url.pathname + url.search;
-  return `req:${method}:${path}`;
+export function cacheKey(...parts: (string | number)[]): string {
+  return parts.join(':');
 }
 
 /**
- * Check if response is cacheable
+ * Cache decorator for methods
  */
-export function isCacheable(response: Response): boolean {
-  // Only cache successful GET requests
-  if (response.status !== 200) return false;
-  
-  // Check cache-control header
-  const cacheControl = response.headers.get('cache-control');
-  if (cacheControl?.includes('no-cache') || cacheControl?.includes('no-store')) {
-    return false;
-  }
-  
-  return true;
+export function cached(options: CacheOptions & { keyPrefix: string }) {
+  return function (
+    target: any,
+    propertyKey: string,
+    descriptor: PropertyDescriptor
+  ) {
+    const originalMethod = descriptor.value;
+
+    descriptor.value = async function (this: any, ...args: any[]) {
+      const cache = this.cache as CacheClient;
+      
+      if (!cache) {
+        return originalMethod.apply(this, args);
+      }
+
+      const key = cacheKey(options.keyPrefix, propertyKey, ...args);
+      
+      return cache.getOrSet(
+        key,
+        () => originalMethod.apply(this, args),
+        options
+      );
+    };
+
+    return descriptor;
+  };
 }
