@@ -1,56 +1,110 @@
+# ===========================================
+# Cloudflare Workers Configuration
+# MVP Template - wrangler.toml
+# ===========================================
+
 name = "mvp-template"
 main = "src/worker/index.ts"
 compatibility_date = "2024-01-01"
 compatibility_flags = ["nodejs_compat"]
 
 # Account ID - update with your Cloudflare account ID
+# Get from: https://dash.cloudflare.com
 # account_id = "your-account-id-here"
 
-# Workers configuration
+# Workers Dev Mode
 workers_dev = true
 
-# Build configuration
+# ===========================================
+# Build Configuration
+# ===========================================
+
 [build]
 command = "npm run build:worker"
 
+[build.upload]
+format = "service-worker"
+
+# ===========================================
+# Observability & Monitoring
+# ===========================================
+
+[observability]
+enabled = true
+head_sampling_rate = 1.0
+
+# ===========================================
 # KV Namespaces
+# ===========================================
+
+# Cache Namespace - for general caching
 [[kv_namespaces]]
 binding = "CACHE"
 id = "your-kv-namespace-id"
 preview_id = "your-preview-kv-namespace-id"
 
+# Sessions Namespace - for user sessions
 [[kv_namespaces]]
 binding = "SESSIONS"
 id = "your-sessions-kv-id"
 preview_id = "your-preview-sessions-kv-id"
 
+# Config Namespace - for application configuration
+[[kv_namespaces]]
+binding = "CONFIG"
+id = "your-config-kv-id"
+preview_id = "your-preview-config-kv-id"
+
+# ===========================================
 # R2 Buckets
+# ===========================================
+
+# Assets Bucket - for static assets
 [[r2_buckets]]
 binding = "ASSETS"
 bucket_name = "mvp-assets"
 preview_bucket_name = "mvp-assets-preview"
 
+# Uploads Bucket - for user uploads
 [[r2_buckets]]
 binding = "UPLOADS"
 bucket_name = "mvp-uploads"
 preview_bucket_name = "mvp-uploads-preview"
 
-# D1 Databases
+# Backups Bucket - for database backups
+[[r2_buckets]]
+binding = "BACKUPS"
+bucket_name = "mvp-backups"
+preview_bucket_name = "mvp-backups-preview"
+
+# ===========================================
+# D1 Database
+# ===========================================
+
 [[d1_databases]]
 binding = "DB"
 database_name = "mvp-database"
 database_id = "your-d1-database-id"
-preview_database_id = "your-preview-d1-database-id"
 
-# AI Gateway Configuration
+# ===========================================
+# AI Configuration
+# ===========================================
+
 [ai]
 binding = "AI"
 
+# ===========================================
 # Analytics Engine
+# ===========================================
+
 [[analytics_engine_datasets]]
 binding = "ANALYTICS"
 
+# ===========================================
 # Queues
+# ===========================================
+
+# Task Queue - for background jobs
 [[queues.producers]]
 binding = "TASK_QUEUE"
 queue = "mvp-tasks"
@@ -59,33 +113,71 @@ queue = "mvp-tasks"
 queue = "mvp-tasks"
 max_batch_size = 10
 max_batch_timeout = 30
+max_retries = 3
+dead_letter_queue = "mvp-tasks-dlq"
 
+# Email Queue - for sending emails
+[[queues.producers]]
+binding = "EMAIL_QUEUE"
+queue = "mvp-emails"
+
+[[queues.consumers]]
+queue = "mvp-emails"
+max_batch_size = 5
+max_batch_timeout = 10
+max_retries = 3
+
+# ===========================================
 # Durable Objects
+# ===========================================
+
 [[durable_objects.bindings]]
 name = "RATE_LIMITER"
 class_name = "RateLimiter"
 script_name = "mvp-template"
 
+[[durable_objects.bindings]]
+name = "SESSION_MANAGER"
+class_name = "SessionManager"
+script_name = "mvp-template"
+
 [[migrations]]
 tag = "v1"
-new_classes = ["RateLimiter"]
+new_classes = ["RateLimiter", "SessionManager"]
 
-# Environment Variables (secrets should be set via wrangler secret put)
+# ===========================================
+# Environment Variables
+# Secrets should be set via: wrangler secret put SECRET_NAME
+# ===========================================
+
 [vars]
 ENVIRONMENT = "development"
 LOG_LEVEL = "info"
+API_VERSION = "v1"
+
+# AI Configuration
 AI_GATEWAY_ID = "your-ai-gateway-id"
+AI_DEFAULT_MODEL = "gpt-4o-mini"
+AI_DEFAULT_TEMPERATURE = "0.7"
 
-# Production Environment
-[env.production]
-name = "mvp-template-production"
-route = { pattern = "example.com/*", zone_name = "example.com" }
+# Feature Flags
+FEATURE_AI_ENABLED = "true"
+FEATURE_ANALYTICS_ENABLED = "true"
+FEATURE_RATE_LIMITING_ENABLED = "true"
+FEATURE_CACHING_ENABLED = "true"
 
-[env.production.vars]
-ENVIRONMENT = "production"
-LOG_LEVEL = "warn"
+# CORS Configuration
+CORS_ALLOWED_ORIGINS = "http://localhost:5173,http://localhost:3000"
+CORS_MAX_AGE = "86400"
 
+# Rate Limiting
+RATE_LIMIT_REQUESTS_PER_MINUTE = "60"
+RATE_LIMIT_REQUESTS_PER_HOUR = "1000"
+
+# ===========================================
 # Staging Environment
+# ===========================================
+
 [env.staging]
 name = "mvp-template-staging"
 route = { pattern = "staging.example.com/*", zone_name = "example.com" }
@@ -93,8 +185,87 @@ route = { pattern = "staging.example.com/*", zone_name = "example.com" }
 [env.staging.vars]
 ENVIRONMENT = "staging"
 LOG_LEVEL = "debug"
+CORS_ALLOWED_ORIGINS = "https://staging.example.com"
 
-# Observability
-[observability]
-enabled = true
-head_sampling_rate = 1.0
+[[env.staging.kv_namespaces]]
+binding = "CACHE"
+id = "your-staging-kv-namespace-id"
+
+[[env.staging.kv_namespaces]]
+binding = "SESSIONS"
+id = "your-staging-sessions-kv-id"
+
+[[env.staging.r2_buckets]]
+binding = "ASSETS"
+bucket_name = "mvp-assets-staging"
+
+[[env.staging.r2_buckets]]
+binding = "UPLOADS"
+bucket_name = "mvp-uploads-staging"
+
+[[env.staging.d1_databases]]
+binding = "DB"
+database_name = "mvp-database-staging"
+database_id = "your-staging-d1-database-id"
+
+# ===========================================
+# Production Environment
+# ===========================================
+
+[env.production]
+name = "mvp-template-production"
+route = { pattern = "example.com/*", zone_name = "example.com" }
+
+[env.production.vars]
+ENVIRONMENT = "production"
+LOG_LEVEL = "warn"
+CORS_ALLOWED_ORIGINS = "https://example.com"
+RATE_LIMIT_REQUESTS_PER_MINUTE = "100"
+RATE_LIMIT_REQUESTS_PER_HOUR = "5000"
+
+[[env.production.kv_namespaces]]
+binding = "CACHE"
+id = "your-production-kv-namespace-id"
+
+[[env.production.kv_namespaces]]
+binding = "SESSIONS"
+id = "your-production-sessions-kv-id"
+
+[[env.production.kv_namespaces]]
+binding = "CONFIG"
+id = "your-production-config-kv-id"
+
+[[env.production.r2_buckets]]
+binding = "ASSETS"
+bucket_name = "mvp-assets-production"
+
+[[env.production.r2_buckets]]
+binding = "UPLOADS"
+bucket_name = "mvp-uploads-production"
+
+[[env.production.r2_buckets]]
+binding = "BACKUPS"
+bucket_name = "mvp-backups-production"
+
+[[env.production.d1_databases]]
+binding = "DB"
+database_name = "mvp-database-production"
+database_id = "your-production-d1-database-id"
+
+# ===========================================
+# Limits & Resources
+# ===========================================
+
+[limits]
+cpu_ms = 50
+
+# ===========================================
+# Rules & Triggers
+# ===========================================
+
+# Cache everything for static assets
+[[rules]]
+type = "Rule"
+globs = ["*.js", "*.css", "*.png", "*.jpg", "*.jpeg", "*.gif", "*.svg", "*.ico", "*.woff", "*.woff2"]
+cache = true
+cache_ttl = 86400
