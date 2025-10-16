@@ -1,132 +1,156 @@
+# Cloudflare Workers Configuration
+# Documentation: https://developers.cloudflare.com/workers/wrangler/configuration/
+
 name = "mvp-template"
 main = "src/worker/index.ts"
 compatibility_date = "2024-12-01"
 compatibility_flags = ["nodejs_compat"]
 
 # Account ID - update with your Cloudflare account ID
-# Get this from your Cloudflare dashboard
+# Get from: https://dash.cloudflare.com/ (right sidebar)
 # account_id = "your-account-id-here"
 
 # Workers configuration
 workers_dev = true
 
-# Build configuration
+# Build configuration (uses esbuild internally)
 [build]
-command = "npm run build"
+command = "npm run build:worker"
 
-###########################################
-# D1 Database Configuration
-###########################################
+# Upload rules - exclude unnecessary files
+[upload]
+format = "service-worker"
+
+# KV Namespaces
+# Create with: wrangler kv:namespace create CACHE
+[[kv_namespaces]]
+binding = "CACHE"
+id = "your-kv-namespace-id"
+preview_id = "your-preview-kv-namespace-id"
+
+[[kv_namespaces]]
+binding = "SESSIONS"
+id = "your-sessions-kv-id"
+preview_id = "your-preview-sessions-kv-id"
+
+# R2 Buckets
+# Create with: wrangler r2 bucket create mvp-assets
+[[r2_buckets]]
+binding = "ASSETS"
+bucket_name = "mvp-assets"
+preview_bucket_name = "mvp-assets-preview"
+
+[[r2_buckets]]
+binding = "UPLOADS"
+bucket_name = "mvp-uploads"
+preview_bucket_name = "mvp-uploads-preview"
+
+# D1 Databases
+# Create with: wrangler d1 create mvp-database
 [[d1_databases]]
 binding = "DB"
 database_name = "mvp-database"
 database_id = "your-d1-database-id"
-# Create with: wrangler d1 create mvp-database
-# Run migrations with: wrangler d1 execute mvp-database --file=./database/schema.sql
 
-###########################################
-# KV Namespaces Configuration
-###########################################
-[[kv_namespaces]]
-binding = "CACHE"
-id = "your-kv-namespace-id"
-# Create with: wrangler kv:namespace create "CACHE"
-
-[[kv_namespaces]]
-binding = "SESSION"
-id = "your-session-kv-id"
-# Create with: wrangler kv:namespace create "SESSION"
-
-###########################################
-# R2 Buckets Configuration
-###########################################
-[[r2_buckets]]
-binding = "STORAGE"
-bucket_name = "mvp-storage"
-# Create with: wrangler r2 bucket create mvp-storage
-
-###########################################
-# AI Gateway Configuration
-###########################################
-[ai]
-binding = "AI"
-# AI Gateway logs and caches your AI requests
-# Configure in Cloudflare dashboard under AI > AI Gateway
-
-###########################################
-# Queue Configuration (Optional)
-###########################################
-# [[queues.producers]]
-# binding = "TASK_QUEUE"
-# queue = "task-queue"
-# Create with: wrangler queues create task-queue
-
-###########################################
-# Analytics Engine (Optional)
-###########################################
-# [[analytics_engine_datasets]]
-# binding = "ANALYTICS"
-
-###########################################
 # Environment Variables
-###########################################
+# Non-sensitive variables can be set here
+# Secrets should be set with: wrangler secret put SECRET_NAME
 [vars]
 ENVIRONMENT = "development"
 LOG_LEVEL = "info"
+AI_GATEWAY_ID = "your-ai-gateway-id"
+CLOUDFLARE_ACCOUNT_ID = "your-account-id"
+FEATURE_AI_ENABLED = "true"
+FEATURE_ANALYTICS_ENABLED = "true"
+FEATURE_RATE_LIMITING_ENABLED = "true"
 
-###########################################
-# Production Environment
-###########################################
-[env.production]
-name = "mvp-template-production"
-workers_dev = false
-route = { pattern = "example.com/*", zone_name = "example.com" }
+# Observability (Logpush, Analytics)
+[observability]
+enabled = true
+head_sampling_rate = 1.0
 
-[env.production.vars]
-ENVIRONMENT = "production"
-LOG_LEVEL = "warn"
+# Limits (optional, use defaults if not specified)
+[limits]
+cpu_ms = 50
 
-[[env.production.d1_databases]]
-binding = "DB"
-database_name = "mvp-database-production"
-database_id = "your-production-d1-id"
-
-[[env.production.kv_namespaces]]
-binding = "CACHE"
-id = "your-production-kv-id"
-
-[[env.production.kv_namespaces]]
-binding = "SESSION"
-id = "your-production-session-kv-id"
-
-[[env.production.r2_buckets]]
-binding = "STORAGE"
-bucket_name = "mvp-storage-production"
-
-###########################################
-# Staging Environment
-###########################################
+# ====================
+# ENVIRONMENT: STAGING
+# ====================
 [env.staging]
 name = "mvp-template-staging"
-workers_dev = false
+# Uncomment and configure your domain:
+# route = { pattern = "staging.example.com/*", zone_name = "example.com" }
 
 [env.staging.vars]
 ENVIRONMENT = "staging"
 LOG_LEVEL = "debug"
 
+# Staging-specific KV Namespaces (use separate namespaces for staging)
+[[env.staging.kv_namespaces]]
+binding = "CACHE"
+id = "your-staging-kv-cache-id"
+
+[[env.staging.kv_namespaces]]
+binding = "SESSIONS"
+id = "your-staging-kv-sessions-id"
+
+# Staging D1 Database
 [[env.staging.d1_databases]]
 binding = "DB"
 database_name = "mvp-database-staging"
-database_id = "your-staging-d1-id"
+database_id = "your-staging-d1-database-id"
 
-[[env.staging.kv_namespaces]]
-binding = "CACHE"
-id = "your-staging-kv-id"
-
-[[env.staging.kv_namespaces]]
-binding = "SESSION"
-id = "your-staging-session-kv-id"
+# Staging R2 Buckets
+[[env.staging.r2_buckets]]
+binding = "ASSETS"
+bucket_name = "mvp-assets-staging"
 
 [[env.staging.r2_buckets]]
-binding = "STORAGE"
-bucket_name = "mvp-storage-staging"
+binding = "UPLOADS"
+bucket_name = "mvp-uploads-staging"
+
+# ========================
+# ENVIRONMENT: PRODUCTION
+# ========================
+[env.production]
+name = "mvp-template-production"
+# Uncomment and configure your domain:
+# route = { pattern = "api.example.com/*", zone_name = "example.com" }
+# Or use workers.dev:
+# routes = ["https://mvp-template-production.workers.dev/*"]
+
+[env.production.vars]
+ENVIRONMENT = "production"
+LOG_LEVEL = "warn"
+
+[env.production.observability]
+enabled = true
+head_sampling_rate = 0.1  # Sample 10% in production
+
+# Production KV Namespaces (use separate namespaces for production)
+[[env.production.kv_namespaces]]
+binding = "CACHE"
+id = "your-production-kv-cache-id"
+
+[[env.production.kv_namespaces]]
+binding = "SESSIONS"
+id = "your-production-kv-sessions-id"
+
+# Production D1 Database
+[[env.production.d1_databases]]
+binding = "DB"
+database_name = "mvp-database-production"
+database_id = "your-production-d1-database-id"
+
+# Production R2 Buckets
+[[env.production.r2_buckets]]
+binding = "ASSETS"
+bucket_name = "mvp-assets-production"
+
+[[env.production.r2_buckets]]
+binding = "UPLOADS"
+bucket_name = "mvp-uploads-production"
+
+# Production limits
+[env.production.limits]
+cpu_ms = 50
