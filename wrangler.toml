@@ -1,9 +1,13 @@
+# Cloudflare Workers Configuration
+# Comprehensive MVP template with all services configured
+
 name = "mvp-template"
 main = "src/worker/index.ts"
-compatibility_date = "2024-01-01"
+compatibility_date = "2024-12-01"
 compatibility_flags = ["nodejs_compat"]
 
-# Account ID - update with your Cloudflare account ID
+# Account ID - REQUIRED: Update with your Cloudflare account ID
+# Find at: https://dash.cloudflare.com/ (in the right sidebar)
 # account_id = "your-account-id-here"
 
 # Workers configuration
@@ -13,54 +17,72 @@ workers_dev = true
 [build]
 command = "npm run build:worker"
 
-# KV Namespaces
+# Limits and features
+[limits]
+cpu_ms = 50
+
+# Observability and monitoring
+[observability]
+enabled = true
+head_sampling_rate = 1.0
+
+# KV Namespaces for caching and sessions
 [[kv_namespaces]]
 binding = "CACHE"
-id = "your-kv-namespace-id"
-preview_id = "your-preview-kv-namespace-id"
+id = "" # Run: wrangler kv:namespace create CACHE
+preview_id = "" # Run: wrangler kv:namespace create CACHE --preview
 
 [[kv_namespaces]]
 binding = "SESSIONS"
-id = "your-sessions-kv-id"
-preview_id = "your-preview-sessions-kv-id"
+id = "" # Run: wrangler kv:namespace create SESSIONS
+preview_id = "" # Run: wrangler kv:namespace create SESSIONS --preview
 
-# R2 Buckets
+# R2 Buckets for asset and file storage
 [[r2_buckets]]
 binding = "ASSETS"
 bucket_name = "mvp-assets"
 preview_bucket_name = "mvp-assets-preview"
+# Create with: wrangler r2 bucket create mvp-assets
+# Create preview: wrangler r2 bucket create mvp-assets-preview
 
 [[r2_buckets]]
 binding = "UPLOADS"
 bucket_name = "mvp-uploads"
 preview_bucket_name = "mvp-uploads-preview"
+# Create with: wrangler r2 bucket create mvp-uploads
+# Create preview: wrangler r2 bucket create mvp-uploads-preview
 
-# D1 Databases
+# D1 Database
 [[d1_databases]]
 binding = "DB"
 database_name = "mvp-database"
-database_id = "your-d1-database-id"
-preview_database_id = "your-preview-d1-database-id"
+database_id = "" # Run: wrangler d1 create mvp-database
+preview_database_id = "" # Run: wrangler d1 create mvp-database-preview
+# Apply migrations: wrangler d1 execute DB --file=./migrations/0001_initial.sql
 
-# AI Gateway Configuration
+# Cloudflare Workers AI (optional)
 [ai]
 binding = "AI"
 
-# Analytics Engine
+# Analytics Engine for metrics and logging
 [[analytics_engine_datasets]]
 binding = "ANALYTICS"
+# No additional setup required, automatically provisioned
 
-# Queues
+# Queues for background task processing
 [[queues.producers]]
 binding = "TASK_QUEUE"
 queue = "mvp-tasks"
+# Create with: wrangler queues create mvp-tasks
 
 [[queues.consumers]]
 queue = "mvp-tasks"
 max_batch_size = 10
 max_batch_timeout = 30
+max_retries = 3
+dead_letter_queue = "mvp-tasks-dlq"
 
-# Durable Objects
+# Durable Objects for stateful operations
 [[durable_objects.bindings]]
 name = "RATE_LIMITER"
 class_name = "RateLimiter"
@@ -70,31 +92,86 @@ script_name = "mvp-template"
 tag = "v1"
 new_classes = ["RateLimiter"]
 
-# Environment Variables (secrets should be set via wrangler secret put)
+# Environment Variables (non-sensitive)
 [vars]
 ENVIRONMENT = "development"
-LOG_LEVEL = "info"
-AI_GATEWAY_ID = "your-ai-gateway-id"
+LOG_LEVEL = "debug"
+
+# Secrets (set with: wrangler secret put <KEY>)
+# REQUIRED secrets:
+# - CLOUDFLARE_ACCOUNT_ID
+# - AI_GATEWAY_ID
+# - OPENAI_API_KEY
+# - API_KEY
 
 # Production Environment
 [env.production]
 name = "mvp-template-production"
-route = { pattern = "example.com/*", zone_name = "example.com" }
+route = { pattern = "api.example.com/*", zone_name = "example.com" }
+# Or use workers_dev = false and custom domain
 
 [env.production.vars]
 ENVIRONMENT = "production"
 LOG_LEVEL = "warn"
 
+[[env.production.kv_namespaces]]
+binding = "CACHE"
+id = "" # Production KV namespace ID
+
+[[env.production.kv_namespaces]]
+binding = "SESSIONS"
+id = "" # Production sessions KV namespace ID
+
+[[env.production.r2_buckets]]
+binding = "ASSETS"
+bucket_name = "mvp-assets-production"
+
+[[env.production.r2_buckets]]
+binding = "UPLOADS"
+bucket_name = "mvp-uploads-production"
+
+[[env.production.d1_databases]]
+binding = "DB"
+database_name = "mvp-database-production"
+database_id = "" # Production database ID
+
 # Staging Environment
 [env.staging]
 name = "mvp-template-staging"
-route = { pattern = "staging.example.com/*", zone_name = "example.com" }
+route = { pattern = "staging-api.example.com/*", zone_name = "example.com" }
 
 [env.staging.vars]
 ENVIRONMENT = "staging"
-LOG_LEVEL = "debug"
+LOG_LEVEL = "info"
 
-# Observability
-[observability]
-enabled = true
-head_sampling_rate = 1.0
+[[env.staging.kv_namespaces]]
+binding = "CACHE"
+id = "" # Staging KV namespace ID
+
+[[env.staging.kv_namespaces]]
+binding = "SESSIONS"
+id = "" # Staging sessions KV namespace ID
+
+[[env.staging.r2_buckets]]
+binding = "ASSETS"
+bucket_name = "mvp-assets-staging"
+
+[[env.staging.r2_buckets]]
+binding = "UPLOADS"
+bucket_name = "mvp-uploads-staging"
+
+[[env.staging.d1_databases]]
+binding = "DB"
+database_name = "mvp-database-staging"
+database_id = "" # Staging database ID
+
+# Development settings
+[dev]
+ip = "127.0.0.1"
+port = 8787
+local_protocol = "http"
+
+# Enable source maps for debugging
+[build.upload]
+format = "modules"
+main = "./src/worker/index.ts"
