@@ -1,218 +1,218 @@
 /**
  * Cloudflare Workers MVP Template
- * Main entry point with routing and middleware
+ * Main worker entry point with comprehensive routing
  */
 
-import { Env } from './types';
-import { corsPreflightResponse, ErrorResponses } from './utils/response';
-import { createLogger } from './utils/logger';
-import { createRateLimiter, getRequestIdentifier, addRateLimitHeaders } from './utils/ratelimit';
-import { generateId } from './utils/auth';
+import type { Env } from './types';
+import { corsResponse, errorResponses, errorResponse } from './utils/response';
+import { createLogger, generateRequestId } from './utils/logger';
+import { toApiError } from './utils/errors';
+import { RateLimiter, getRateLimitKey, rateLimitConfigs } from './utils/rate-limit';
 
-// Import route handlers
-import { handleChatCompletion, handleEmbedding, handleStreamingChat } from './routes/ai';
+// Route handlers
 import {
-  handleListItems,
-  handleGetItem,
-  handleCreateItem,
-  handleUpdateItem,
-  handleDeleteItem,
+  handleChatCompletion,
+  handleSimpleCompletion,
+  handleListModels,
+} from './routes/ai';
+import {
+  handleCreateUser,
+  handleListUsers,
+  handleGetUser,
+  handleUpdateUser,
+  handleDeleteUser,
 } from './routes/db';
-import { handleGetCache, handleSetCache, handleDeleteCache, handleListCache } from './routes/kv';
 import {
-  handleGetFile,
-  handleUploadFile,
+  handleSetKV,
+  handleGetKV,
+  handleDeleteKV,
+  handleListKeys,
+} from './routes/kv';
+import {
+  handleUpload,
+  handleDownload,
+  handleGetMetadata,
   handleDeleteFile,
   handleListFiles,
-  handleHeadFile,
+  handleCreateMultipartUpload,
 } from './routes/r2';
-import { handleHealthCheck } from './routes/health';
+import {
+  handleHealthCheck,
+  handleDetailedHealthCheck,
+  handleReadinessCheck,
+  handleLivenessCheck,
+} from './routes/health';
 
 /**
- * Router type definition
+ * Router utility to match paths
  */
-type RouteHandler = (request: Request, env: Env, params: any, requestId?: string) => Promise<Response>;
+function matchPath(pathname: string, pattern: string): { match: boolean; params: Record<string, string> } {
+  const patternParts = pattern.split('/');
+  const pathParts = pathname.split('/');
 
-interface Route {
-  method: string;
-  pattern: RegExp;
-  handler: RouteHandler;
-}
+  if (patternParts.length !== pathParts.length) {
+    return { match: false, params: {} };
+  }
 
-/**
- * Define all routes
- */
-const routes: Route[] = [
-  // Health check
-  { method: 'GET', pattern: /^\/api\/health$/, handler: handleHealthCheck },
+  const params: Record<string, string> = {};
 
-  // AI routes
-  { method: 'POST', pattern: /^\/api\/ai\/chat$/, handler: handleChatCompletion },
-  { method: 'POST', pattern: /^\/api\/ai\/embed$/, handler: handleEmbedding },
-  { method: 'POST', pattern: /^\/api\/ai\/stream$/, handler: handleStreamingChat },
-
-  // Database routes
-  { method: 'GET', pattern: /^\/api\/db\/items$/, handler: handleListItems },
-  { method: 'GET', pattern: /^\/api\/db\/items\/(\d+)$/, handler: (req, env, match, reqId) => handleGetItem(req, env, match[1], reqId) },
-  { method: 'POST', pattern: /^\/api\/db\/items$/, handler: handleCreateItem },
-  { method: 'PUT', pattern: /^\/api\/db\/items\/(\d+)$/, handler: (req, env, match, reqId) => handleUpdateItem(req, env, match[1], reqId) },
-  { method: 'DELETE', pattern: /^\/api\/db\/items\/(\d+)$/, handler: (req, env, match, reqId) => handleDeleteItem(req, env, match[1], reqId) },
-
-  // KV cache routes
-  { method: 'GET', pattern: /^\/api\/kv\/cache$/, handler: handleListCache },
-  { method: 'GET', pattern: /^\/api\/kv\/cache\/([^/]+)$/, handler: (req, env, match, reqId) => handleGetCache(req, env, match[1], reqId) },
-  { method: 'PUT', pattern: /^\/api\/kv\/cache\/([^/]+)$/, handler: (req, env, match, reqId) => handleSetCache(req, env, match[1], reqId) },
-  { method: 'DELETE', pattern: /^\/api\/kv\/cache\/([^/]+)$/, handler: (req, env, match, reqId) => handleDeleteCache(req, env, match[1], reqId) },
-
-  // R2 storage routes
-  { method: 'GET', pattern: /^\/api\/r2\/files$/, handler: handleListFiles },
-  { method: 'GET', pattern: /^\/api\/r2\/files\/(.+)$/, handler: (req, env, match, reqId) => handleGetFile(req, env, match[1], reqId) },
-  { method: 'PUT', pattern: /^\/api\/r2\/files\/(.+)$/, handler: (req, env, match, reqId) => handleUploadFile(req, env, match[1], reqId) },
-  { method: 'DELETE', pattern: /^\/api\/r2\/files\/(.+)$/, handler: (req, env, match, reqId) => handleDeleteFile(req, env, match[1], reqId) },
-  { method: 'HEAD', pattern: /^\/api\/r2\/files\/(.+)$/, handler: (req, env, match, reqId) => handleHeadFile(req, env, match[1], reqId) },
-];
-
-/**
- * Find matching route
- */
-function findRoute(method: string, path: string): { handler: RouteHandler; match: RegExpMatchArray } | null {
-  for (const route of routes) {
-    if (route.method === method) {
-      const match = path.match(route.pattern);
-      if (match) {
-        return { handler: route.handler, match };
-      }
+  for (let i = 0; i < patternParts.length; i++) {
+    if (patternParts[i].startsWith(':')) {
+      const paramName = patternParts[i].substring(1);
+      params[paramName] = pathParts[i];
+    } else if (patternParts[i] !== pathParts[i]) {
+      return { match: false, params: {} };
     }
   }
-  return null;
+
+  return { match: true, params };
 }
 
 /**
- * Main fetch handler
+ * Main request handler
+ */
+async function handleRequest(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+  const requestId = generateRequestId();
+  const url = new URL(request.url);
+  const { pathname } = url;
+  const method = request.method;
+
+  // Create logger with request context
+  const logger = createLogger(env, {
+    requestId,
+    path: pathname,
+    method,
+  });
+
+  logger.info('Incoming request');
+
+  try {
+    // Handle CORS preflight
+    if (method === 'OPTIONS') {
+      return corsResponse();
+    }
+
+    // Rate limiting (optional)
+    if (env.FEATURE_RATE_LIMITING_ENABLED === 'true') {
+      const rateLimiter = new RateLimiter(env.CACHE);
+      const rateLimitKey = getRateLimitKey(request);
+      await rateLimiter.enforce(rateLimitKey, rateLimitConfigs.perMinute);
+    }
+
+    // Health check routes (no API prefix)
+    if (pathname === '/health') {
+      return await handleHealthCheck();
+    }
+    if (pathname === '/health/detailed') {
+      return await handleDetailedHealthCheck(env);
+    }
+    if (pathname === '/health/ready') {
+      return await handleReadinessCheck();
+    }
+    if (pathname === '/health/live') {
+      return await handleLivenessCheck();
+    }
+
+    // API routes
+    if (pathname.startsWith('/api/')) {
+      // AI Gateway routes
+      if (pathname === '/api/ai/chat' && method === 'POST') {
+        return await handleChatCompletion(request, env);
+      }
+      if (pathname === '/api/ai/complete' && method === 'POST') {
+        return await handleSimpleCompletion(request, env);
+      }
+      if (pathname === '/api/ai/models' && method === 'GET') {
+        return await handleListModels();
+      }
+
+      // D1 Database routes
+      if (pathname === '/api/db/users' && method === 'POST') {
+        return await handleCreateUser(request, env);
+      }
+      if (pathname === '/api/db/users' && method === 'GET') {
+        return await handleListUsers(request, env);
+      }
+
+      const userMatch = matchPath(pathname, '/api/db/users/:id');
+      if (userMatch.match) {
+        const userId = userMatch.params.id;
+        if (method === 'GET') {
+          return await handleGetUser(userId, env);
+        }
+        if (method === 'PUT') {
+          return await handleUpdateUser(userId, request, env);
+        }
+        if (method === 'DELETE') {
+          return await handleDeleteUser(userId, env);
+        }
+      }
+
+      // KV routes
+      if (pathname === '/api/kv' && method === 'POST') {
+        return await handleSetKV(request, env);
+      }
+      if (pathname === '/api/kv' && method === 'GET') {
+        return await handleListKeys(request, env);
+      }
+
+      const kvMatch = matchPath(pathname, '/api/kv/:key');
+      if (kvMatch.match) {
+        const key = kvMatch.params.key;
+        if (method === 'GET') {
+          return await handleGetKV(key, env);
+        }
+        if (method === 'DELETE') {
+          return await handleDeleteKV(key, env);
+        }
+      }
+
+      // R2 routes
+      if (pathname === '/api/r2/upload' && method === 'POST') {
+        return await handleUpload(request, env);
+      }
+      if (pathname === '/api/r2' && method === 'GET') {
+        return await handleListFiles(request, env);
+      }
+      if (pathname === '/api/r2/multipart/create' && method === 'POST') {
+        return await handleCreateMultipartUpload(request, env);
+      }
+
+      const r2Match = matchPath(pathname, '/api/r2/:key');
+      if (r2Match.match) {
+        const key = decodeURIComponent(r2Match.params.key);
+        if (method === 'GET') {
+          return await handleDownload(key, env);
+        }
+        if (method === 'HEAD') {
+          return await handleGetMetadata(key, env);
+        }
+        if (method === 'DELETE') {
+          return await handleDeleteFile(key, env);
+        }
+      }
+    }
+
+    // Route not found
+    logger.warn('Route not found');
+    return errorResponses.notFound(`Route ${method} ${pathname} not found`);
+  } catch (error) {
+    logger.error('Request handler error', error);
+    const apiError = toApiError(error);
+    return errorResponse(
+      apiError.message,
+      apiError.statusCode,
+      apiError.code,
+      apiError.details
+    );
+  }
+}
+
+/**
+ * Worker export with fetch handler
  */
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-    const url = new URL(request.url);
-    const method = request.method;
-    const path = url.pathname;
-    const requestId = generateId();
-    const logger = createLogger(env, 'worker');
-    const origin = request.headers.get('Origin') || undefined;
-
-    // Log incoming request
-    logger.info('Incoming request', {
-      method,
-      path,
-      requestId,
-      origin,
-    });
-
-    try {
-      // Handle CORS preflight
-      if (method === 'OPTIONS') {
-        return corsPreflightResponse(origin, env.CORS_ALLOWED_ORIGINS);
-      }
-
-      // Rate limiting (skip for health check)
-      if (path !== '/api/health') {
-        const rateLimiter = createRateLimiter(env.CACHE, 100, 60000);
-        const identifier = getRequestIdentifier(request);
-        const rateLimit = await rateLimiter.checkLimit(identifier);
-
-        if (rateLimit.exceeded) {
-          const response = ErrorResponses.rateLimitExceeded(
-            'Rate limit exceeded. Please try again later.',
-            requestId,
-            origin,
-            env.CORS_ALLOWED_ORIGINS
-          );
-          addRateLimitHeaders(response.headers, rateLimit);
-          return response;
-        }
-
-        // Add rate limit headers to response (will be added later)
-        ctx.passThroughOnException();
-      }
-
-      // Find matching route
-      const route = findRoute(method, path);
-
-      if (!route) {
-        // Default route - return API documentation
-        if (path === '/' || path === '/api') {
-          return new Response(
-            JSON.stringify({
-              name: 'Cloudflare Workers MVP Template',
-              version: '1.0.0',
-              endpoints: {
-                health: 'GET /api/health',
-                ai: {
-                  chat: 'POST /api/ai/chat',
-                  embed: 'POST /api/ai/embed',
-                  stream: 'POST /api/ai/stream',
-                },
-                database: {
-                  list: 'GET /api/db/items',
-                  get: 'GET /api/db/items/:id',
-                  create: 'POST /api/db/items',
-                  update: 'PUT /api/db/items/:id',
-                  delete: 'DELETE /api/db/items/:id',
-                },
-                cache: {
-                  list: 'GET /api/kv/cache',
-                  get: 'GET /api/kv/cache/:key',
-                  set: 'PUT /api/kv/cache/:key',
-                  delete: 'DELETE /api/kv/cache/:key',
-                },
-                storage: {
-                  list: 'GET /api/r2/files',
-                  get: 'GET /api/r2/files/:key',
-                  upload: 'PUT /api/r2/files/:key',
-                  delete: 'DELETE /api/r2/files/:key',
-                  head: 'HEAD /api/r2/files/:key',
-                },
-              },
-              documentation: 'See README.md for full API documentation',
-            }, null, 2),
-            {
-              headers: {
-                'Content-Type': 'application/json',
-                'Access-Control-Allow-Origin': origin || '*',
-              },
-            }
-          );
-        }
-
-        return ErrorResponses.notFound(
-          'Endpoint not found',
-          requestId,
-          origin,
-          env.CORS_ALLOWED_ORIGINS
-        );
-      }
-
-      // Execute route handler
-      const response = await route.handler(request, env, route.match, requestId);
-
-      // Add request ID header
-      response.headers.set('X-Request-ID', requestId);
-
-      logger.info('Request completed', {
-        requestId,
-        status: response.status,
-      });
-
-      return response;
-    } catch (error: any) {
-      logger.error('Unhandled error', error, { requestId });
-
-      return ErrorResponses.internalError(
-        'An unexpected error occurred',
-        env.ENVIRONMENT === 'development' ? error.message : undefined,
-        requestId,
-        origin,
-        env.CORS_ALLOWED_ORIGINS
-      );
-    }
+    return handleRequest(request, env, ctx);
   },
 };

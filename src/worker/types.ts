@@ -1,79 +1,165 @@
 /**
- * Comprehensive TypeScript types for Cloudflare Workers
+ * TypeScript type definitions for Cloudflare Workers
  */
 
-// Environment bindings interface
+import type {
+  KVNamespace,
+  R2Bucket,
+  D1Database,
+  ExecutionContext,
+} from '@cloudflare/workers-types';
+
+/**
+ * Environment bindings interface
+ * Add your Cloudflare service bindings here
+ */
 export interface Env {
-  // KV Namespace bindings
-  MY_KV: KVNamespace;
-  
-  // D1 Database bindings
-  DB: D1Database;
-  
-  // R2 Bucket bindings
-  MY_BUCKET: R2Bucket;
-  
-  // AI Gateway configuration
-  AI_GATEWAY_ID: string;
-  CLOUDFLARE_ACCOUNT_ID: string;
-  
-  // OpenAI API Key (stored as secret)
-  OPENAI_API_KEY: string;
-  
-  // Analytics Engine bindings
-  ANALYTICS: AnalyticsEngineDataset;
-  
   // Environment variables
   ENVIRONMENT: 'development' | 'staging' | 'production';
-  API_BASE_URL: string;
+  LOG_LEVEL: 'debug' | 'info' | 'warn' | 'error';
+  
+  // Cloudflare Account
+  CLOUDFLARE_ACCOUNT_ID: string;
+  
+  // AI Gateway
+  AI_GATEWAY_ID: string;
+  OPENAI_API_KEY: string;
+  
+  // D1 Database
+  DB: D1Database;
+  
+  // KV Namespaces
+  CACHE: KVNamespace;
+  SESSIONS: KVNamespace;
+  
+  // R2 Buckets
+  ASSETS: R2Bucket;
+  UPLOADS: R2Bucket;
+  
+  // Feature flags
+  FEATURE_AI_ENABLED?: string;
+  FEATURE_ANALYTICS_ENABLED?: string;
+  FEATURE_RATE_LIMITING_ENABLED?: string;
+  
+  // Optional: Analytics Engine
+  // ANALYTICS?: AnalyticsEngineDataset;
+  
+  // Optional: Durable Objects
+  // RATE_LIMITER?: DurableObjectNamespace;
+  
+  // Optional: Queue Producers
+  // TASK_QUEUE?: Queue;
 }
 
-// Request context with type safety
-export interface RequestContext {
-  request: Request;
-  env: Env;
-  ctx: ExecutionContext;
+/**
+ * Standard API response wrapper
+ */
+export interface ApiResponse<T> {
+  success: true;
+  data: T;
 }
 
-// Standard API response structure
-export interface ApiResponse<T = any> {
-  success: boolean;
-  data?: T;
-  error?: {
-    code: string;
+/**
+ * Standard API error response
+ */
+export interface ApiError {
+  success: false;
+  error: {
     message: string;
-    details?: any;
-  };
-  meta?: {
-    timestamp: string;
-    requestId?: string;
-    [key: string]: any;
+    code: string;
+    details?: unknown;
   };
 }
 
-// AI Gateway request/response types
-export interface AIGatewayRequest {
+/**
+ * Pagination metadata
+ */
+export interface PaginationMeta {
+  page: number;
+  limit: number;
+  total: number;
+  totalPages: number;
+}
+
+/**
+ * Database model interfaces
+ */
+export interface User {
+  id: number;
+  email: string;
+  name: string;
+  role: 'user' | 'admin';
+  created_at: string;
+  updated_at?: string;
+}
+
+export interface Session {
+  id: string;
+  user_id: number;
+  data: string;
+  expires_at: string;
+  created_at: string;
+}
+
+export interface ApiKey {
+  id: number;
+  user_id: number;
+  key_hash: string;
+  name: string;
+  last_used_at?: string;
+  created_at: string;
+  expires_at?: string;
+}
+
+export interface AuditLog {
+  id: number;
+  user_id?: number;
+  action: string;
+  resource_type: string;
+  resource_id?: string;
+  metadata?: string;
+  ip_address?: string;
+  user_agent?: string;
+  created_at: string;
+}
+
+export interface Item {
+  id: number;
+  user_id: number;
+  title: string;
+  description?: string;
+  status: 'active' | 'inactive' | 'archived';
+  created_at: string;
+  updated_at?: string;
+}
+
+/**
+ * OpenAI types (via AI Gateway)
+ */
+export interface OpenAIMessage {
+  role: 'system' | 'user' | 'assistant';
+  content: string;
+}
+
+export interface OpenAICompletionRequest {
   model: string;
-  messages: Array<{
-    role: 'system' | 'user' | 'assistant';
-    content: string;
-  }>;
+  messages: OpenAIMessage[];
   temperature?: number;
   max_tokens?: number;
+  top_p?: number;
+  frequency_penalty?: number;
+  presence_penalty?: number;
   stream?: boolean;
 }
 
-export interface AIGatewayResponse {
+export interface OpenAICompletionResponse {
   id: string;
   object: string;
   created: number;
   model: string;
   choices: Array<{
     index: number;
-    message: {
-      role: string;
-      content: string;
-    };
+    message: OpenAIMessage;
     finish_reason: string;
   }>;
   usage: {
@@ -83,44 +169,28 @@ export interface AIGatewayResponse {
   };
 }
 
-// D1 database query result types
-export interface D1Result<T = any> {
-  success: boolean;
-  results?: T[];
-  meta: {
-    duration: number;
-    size_after: number;
-    rows_read: number;
-    rows_written: number;
-  };
-  error?: string;
+/**
+ * R2 Object metadata
+ */
+export interface R2ObjectMetadata {
+  key: string;
+  size: number;
+  etag: string;
+  uploadedAt: Date;
+  contentType?: string;
+  customMetadata?: Record<string, string>;
 }
 
-// Error types
-export class WorkerError extends Error {
-  constructor(
-    message: string,
-    public statusCode: number = 500,
-    public code: string = 'INTERNAL_ERROR',
-    public details?: any
-  ) {
-    super(message);
-    this.name = 'WorkerError';
-  }
+/**
+ * Rate limit info
+ */
+export interface RateLimitInfo {
+  allowed: boolean;
+  remaining: number;
+  resetAt: number;
 }
 
-// Route handler type
-export type RouteHandler = (
-  request: Request,
-  env: Env,
-  ctx: ExecutionContext,
-  params?: Record<string, string>
-) => Promise<Response>;
-
-// Middleware type
-export type Middleware = (
-  request: Request,
-  env: Env,
-  ctx: ExecutionContext,
-  next: () => Promise<Response>
-) => Promise<Response>;
+/**
+ * Export ExecutionContext for use in handlers
+ */
+export type { ExecutionContext };
