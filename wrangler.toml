@@ -1,13 +1,10 @@
-# Cloudflare Workers Configuration
-# https://developers.cloudflare.com/workers/wrangler/configuration/
-
 name = "mvp-template"
 main = "src/worker/index.ts"
-compatibility_date = "2024-01-01"
+compatibility_date = "2024-12-01"
 compatibility_flags = ["nodejs_compat"]
 
 # Account ID - update with your Cloudflare account ID
-# Get this from: https://dash.cloudflare.com/ -> Workers & Pages -> Overview
+# Get this from your Cloudflare dashboard
 # account_id = "your-account-id-here"
 
 # Workers configuration
@@ -17,140 +14,119 @@ workers_dev = true
 [build]
 command = "npm run build"
 
-# Observability - send logs to Cloudflare
-[observability]
-enabled = true
+###########################################
+# D1 Database Configuration
+###########################################
+[[d1_databases]]
+binding = "DB"
+database_name = "mvp-database"
+database_id = "your-d1-database-id"
+# Create with: wrangler d1 create mvp-database
+# Run migrations with: wrangler d1 execute mvp-database --file=./database/schema.sql
 
-# ============================================================================
-# BINDINGS - Uncomment and configure as needed
-# ============================================================================
+###########################################
+# KV Namespaces Configuration
+###########################################
+[[kv_namespaces]]
+binding = "CACHE"
+id = "your-kv-namespace-id"
+# Create with: wrangler kv:namespace create "CACHE"
 
-# KV Namespaces
-# Create with: wrangler kv:namespace create "MY_KV"
-# [[kv_namespaces]]
-# binding = "MY_KV"
-# id = "your-kv-namespace-id"
+[[kv_namespaces]]
+binding = "SESSION"
+id = "your-session-kv-id"
+# Create with: wrangler kv:namespace create "SESSION"
 
-# D1 Databases
-# Create with: wrangler d1 create mvp-template-db
-# [[d1_databases]]
-# binding = "DB"
-# database_name = "mvp-template-db"
-# database_id = "your-d1-database-id"
+###########################################
+# R2 Buckets Configuration
+###########################################
+[[r2_buckets]]
+binding = "STORAGE"
+bucket_name = "mvp-storage"
+# Create with: wrangler r2 bucket create mvp-storage
 
-# R2 Buckets
-# Create with: wrangler r2 bucket create my-bucket
-# [[r2_buckets]]
-# binding = "MY_BUCKET"
-# bucket_name = "my-bucket"
+###########################################
+# AI Gateway Configuration
+###########################################
+[ai]
+binding = "AI"
+# AI Gateway logs and caches your AI requests
+# Configure in Cloudflare dashboard under AI > AI Gateway
 
-# Analytics Engine
+###########################################
+# Queue Configuration (Optional)
+###########################################
+# [[queues.producers]]
+# binding = "TASK_QUEUE"
+# queue = "task-queue"
+# Create with: wrangler queues create task-queue
+
+###########################################
+# Analytics Engine (Optional)
+###########################################
 # [[analytics_engine_datasets]]
 # binding = "ANALYTICS"
 
-# Durable Objects
-# [[durable_objects.bindings]]
-# name = "MY_DURABLE_OBJECT"
-# class_name = "MyDurableObject"
-# script_name = "my-worker"
-
-# Queues
-# [[queues.producers]]
-# binding = "MY_QUEUE"
-# queue = "my-queue"
-
-# [[queues.consumers]]
-# queue = "my-queue"
-# max_batch_size = 10
-# max_batch_timeout = 30
-
-# ============================================================================
-# ENVIRONMENT VARIABLES
-# ============================================================================
-
+###########################################
+# Environment Variables
+###########################################
 [vars]
 ENVIRONMENT = "development"
-API_BASE_URL = "http://localhost:8787"
+LOG_LEVEL = "info"
 
-# ============================================================================
-# SECRETS - Set via CLI, never commit to git
-# ============================================================================
-# Set secrets with: wrangler secret put SECRET_NAME
-#
-# Required secrets:
-# - OPENAI_API_KEY: Your OpenAI API key
-# - CLOUDFLARE_ACCOUNT_ID: Your Cloudflare account ID (for AI Gateway)
-# - AI_GATEWAY_ID: Your AI Gateway ID
-
-# ============================================================================
-# ENVIRONMENT: STAGING
-# ============================================================================
-
-[env.staging]
-name = "mvp-template-staging"
-workers_dev = false
-route = { pattern = "staging.example.com/*", zone_name = "example.com" }
-
-[env.staging.vars]
-ENVIRONMENT = "staging"
-API_BASE_URL = "https://staging.example.com"
-
-# Staging KV namespace
-# [[env.staging.kv_namespaces]]
-# binding = "MY_KV"
-# id = "your-staging-kv-id"
-
-# Staging D1 database
-# [[env.staging.d1_databases]]
-# binding = "DB"
-# database_name = "mvp-template-staging-db"
-# database_id = "your-staging-d1-id"
-
-# Staging R2 bucket
-# [[env.staging.r2_buckets]]
-# binding = "MY_BUCKET"
-# bucket_name = "my-bucket-staging"
-
-# ============================================================================
-# ENVIRONMENT: PRODUCTION
-# ============================================================================
-
+###########################################
+# Production Environment
+###########################################
 [env.production]
 name = "mvp-template-production"
 workers_dev = false
-route = { pattern = "api.example.com/*", zone_name = "example.com" }
-
-# Production limits and settings
-logpush = true
+route = { pattern = "example.com/*", zone_name = "example.com" }
 
 [env.production.vars]
 ENVIRONMENT = "production"
-API_BASE_URL = "https://api.example.com"
+LOG_LEVEL = "warn"
 
-# Production KV namespace
-# [[env.production.kv_namespaces]]
-# binding = "MY_KV"
-# id = "your-production-kv-id"
+[[env.production.d1_databases]]
+binding = "DB"
+database_name = "mvp-database-production"
+database_id = "your-production-d1-id"
 
-# Production D1 database
-# [[env.production.d1_databases]]
-# binding = "DB"
-# database_name = "mvp-template-production-db"
-# database_id = "your-production-d1-id"
+[[env.production.kv_namespaces]]
+binding = "CACHE"
+id = "your-production-kv-id"
 
-# Production R2 bucket
-# [[env.production.r2_buckets]]
-# binding = "MY_BUCKET"
-# bucket_name = "my-bucket-production"
+[[env.production.kv_namespaces]]
+binding = "SESSION"
+id = "your-production-session-kv-id"
 
-# ============================================================================
-# LIMITS & RESOURCE CONFIGURATION
-# ============================================================================
+[[env.production.r2_buckets]]
+binding = "STORAGE"
+bucket_name = "mvp-storage-production"
 
-# Limits (adjust based on your Workers plan)
-# [limits]
-# cpu_ms = 50
+###########################################
+# Staging Environment
+###########################################
+[env.staging]
+name = "mvp-template-staging"
+workers_dev = false
 
-# Placement hints for optimal performance
-# [placement]
-# mode = "smart"
+[env.staging.vars]
+ENVIRONMENT = "staging"
+LOG_LEVEL = "debug"
+
+[[env.staging.d1_databases]]
+binding = "DB"
+database_name = "mvp-database-staging"
+database_id = "your-staging-d1-id"
+
+[[env.staging.kv_namespaces]]
+binding = "CACHE"
+id = "your-staging-kv-id"
+
+[[env.staging.kv_namespaces]]
+binding = "SESSION"
+id = "your-staging-session-kv-id"
+
+[[env.staging.r2_buckets]]
+binding = "STORAGE"
+bucket_name = "mvp-storage-staging"
