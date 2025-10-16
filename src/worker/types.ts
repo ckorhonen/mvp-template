@@ -35,12 +35,57 @@ export interface Env {
   // Environment Variables
   ENVIRONMENT: 'development' | 'staging' | 'production';
   LOG_LEVEL: 'debug' | 'info' | 'warn' | 'error';
+  CLOUDFLARE_ACCOUNT_ID: string;
   AI_GATEWAY_ID: string;
   OPENAI_API_KEY: string;
+  SESSION_SECRET: string;
+  JWT_SECRET?: string;
 
   // Optional secrets
-  SESSION_SECRET?: string;
   WEBHOOK_SECRET?: string;
+  STRIPE_SECRET_KEY?: string;
+  SENDGRID_API_KEY?: string;
+  RESEND_API_KEY?: string;
+}
+
+// ============================================
+// AI Service Types
+// ============================================
+
+export interface ChatMessage {
+  role: 'system' | 'user' | 'assistant';
+  content: string;
+  name?: string;
+}
+
+export interface ChatCompletionRequest {
+  messages: ChatMessage[];
+  model?: string;
+  temperature?: number;
+  maxTokens?: number;
+  topP?: number;
+  frequencyPenalty?: number;
+  presencePenalty?: number;
+  userId?: string;
+  stream?: boolean;
+}
+
+export interface EmbeddingRequest {
+  input: string | string[];
+  model?: string;
+  userId?: string;
+}
+
+export interface AIResponse<T = any> {
+  success: boolean;
+  data?: T;
+  error?: string;
+  errorCode?: string;
+}
+
+export interface AIService {
+  chatCompletion(request: ChatCompletionRequest): Promise<AIResponse>;
+  embedding(request: EmbeddingRequest): Promise<AIResponse>;
 }
 
 // ============================================
@@ -81,47 +126,6 @@ export interface PaginatedResponse<T> {
 }
 
 // ============================================
-// AI Gateway Types
-// ============================================
-
-export interface AIGatewayConfig {
-  accountId: string;
-  gatewayId: string;
-  provider: 'openai' | 'anthropic' | 'azure' | 'workers-ai';
-  model: string;
-  cacheTTL?: number;
-}
-
-export interface ChatMessage {
-  role: 'system' | 'user' | 'assistant';
-  content: string;
-}
-
-export interface ChatCompletionRequest {
-  messages: ChatMessage[];
-  model?: string;
-  temperature?: number;
-  maxTokens?: number;
-  stream?: boolean;
-}
-
-export interface ChatCompletionResponse {
-  id: string;
-  model: string;
-  choices: Array<{
-    message: ChatMessage;
-    finishReason: string;
-    index: number;
-  }>;
-  usage: {
-    promptTokens: number;
-    completionTokens: number;
-    totalTokens: number;
-  };
-  cached?: boolean;
-}
-
-// ============================================
 // D1 Database Types
 // ============================================
 
@@ -129,27 +133,53 @@ export interface User {
   id: string;
   email: string;
   name: string;
-  createdAt: string;
-  updatedAt: string;
-  metadata?: Record<string, any>;
+  created_at: number;
+  updated_at: number;
+  last_login_at?: number;
+  is_active: number;
+  metadata?: string; // JSON string
 }
 
 export interface Session {
   id: string;
-  userId: string;
+  user_id: string;
   token: string;
-  expiresAt: string;
-  createdAt: string;
-  metadata?: Record<string, any>;
+  expires_at: number;
+  created_at: number;
+  ip_address?: string;
+  user_agent?: string;
+}
+
+export interface ApiKey {
+  id: string;
+  user_id: string;
+  key_hash: string;
+  name: string;
+  scopes?: string; // JSON array
+  created_at: number;
+  last_used_at?: number;
+  expires_at?: number;
+  is_active: number;
+}
+
+export interface AuditLog {
+  id: string;
+  user_id?: string;
+  action: string;
+  resource_type?: string;
+  resource_id?: string;
+  metadata?: string; // JSON string
+  ip_address?: string;
+  created_at: number;
 }
 
 export interface DBQueryResult<T = any> {
   results: T[];
   success: boolean;
-  meta: {
-    duration: number;
-    rowsRead: number;
-    rowsWritten: number;
+  meta?: {
+    duration?: number;
+    rows_read?: number;
+    rows_written?: number;
   };
 }
 
