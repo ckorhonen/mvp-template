@@ -4,16 +4,28 @@ compatibility_date = "2024-01-01"
 compatibility_flags = ["nodejs_compat"]
 
 # Account ID - update with your Cloudflare account ID
+# Get from: https://dash.cloudflare.com
 # account_id = "your-account-id-here"
 
 # Workers configuration
 workers_dev = true
+send_metrics = true
 
 # Build configuration
 [build]
 command = "npm run build:worker"
 
+# Observability - Enable for production monitoring
+[observability]
+enabled = true
+head_sampling_rate = 1.0
+
+# ===================================
+# Service Bindings
+# ===================================
+
 # KV Namespaces
+# Create with: wrangler kv:namespace create CACHE
 [[kv_namespaces]]
 binding = "CACHE"
 id = "your-kv-namespace-id"
@@ -25,6 +37,7 @@ id = "your-sessions-kv-id"
 preview_id = "your-preview-sessions-kv-id"
 
 # R2 Buckets
+# Create with: wrangler r2 bucket create mvp-assets
 [[r2_buckets]]
 binding = "ASSETS"
 bucket_name = "mvp-assets"
@@ -36,56 +49,81 @@ bucket_name = "mvp-uploads"
 preview_bucket_name = "mvp-uploads-preview"
 
 # D1 Databases
+# Create with: wrangler d1 create mvp-database
 [[d1_databases]]
 binding = "DB"
 database_name = "mvp-database"
 database_id = "your-d1-database-id"
-preview_database_id = "your-preview-d1-database-id"
+# Uncomment for preview database
+# preview_database_id = "your-preview-d1-database-id"
 
 # AI Gateway Configuration
-[ai]
-binding = "AI"
+# Note: AI Gateway doesn't require binding, use env vars for configuration
+# Create at: https://dash.cloudflare.com/ai/ai-gateway
 
-# Analytics Engine
-[[analytics_engine_datasets]]
-binding = "ANALYTICS"
+# Analytics Engine (Optional)
+# [[analytics_engine_datasets]]
+# binding = "ANALYTICS"
 
-# Queues
-[[queues.producers]]
-binding = "TASK_QUEUE"
-queue = "mvp-tasks"
+# Queues (Optional - for background processing)
+# [[queues.producers]]
+# binding = "TASK_QUEUE"
+# queue = "mvp-tasks"
+#
+# [[queues.consumers]]
+# queue = "mvp-tasks"
+# max_batch_size = 10
+# max_batch_timeout = 30
+# max_retries = 3
+# dead_letter_queue = "mvp-tasks-dlq"
 
-[[queues.consumers]]
-queue = "mvp-tasks"
-max_batch_size = 10
-max_batch_timeout = 30
+# Durable Objects (Optional - for stateful applications)
+# [[durable_objects.bindings]]
+# name = "RATE_LIMITER"
+# class_name = "RateLimiter"
+# script_name = "mvp-template"
+#
+# [[migrations]]
+# tag = "v1"
+# new_classes = ["RateLimiter"]
 
-# Durable Objects
-[[durable_objects.bindings]]
-name = "RATE_LIMITER"
-class_name = "RateLimiter"
-script_name = "mvp-template"
+# ===================================
+# Environment Variables
+# ===================================
+# Secrets should be set via: wrangler secret put SECRET_NAME
 
-[[migrations]]
-tag = "v1"
-new_classes = ["RateLimiter"]
-
-# Environment Variables (secrets should be set via wrangler secret put)
 [vars]
+# Environment
 ENVIRONMENT = "development"
 LOG_LEVEL = "info"
-AI_GATEWAY_ID = "your-ai-gateway-id"
 
-# Production Environment
-[env.production]
-name = "mvp-template-production"
-route = { pattern = "example.com/*", zone_name = "example.com" }
+# API Configuration
+API_VERSION = "v1"
 
-[env.production.vars]
-ENVIRONMENT = "production"
-LOG_LEVEL = "warn"
+# AI Gateway (IDs from dashboard)
+# AI_GATEWAY_ID = "your-ai-gateway-id"
+# CLOUDFLARE_ACCOUNT_ID = "your-account-id"
 
+# CORS Configuration
+CORS_ALLOWED_ORIGINS = "http://localhost:5173,http://localhost:3000"
+CORS_ALLOWED_METHODS = "GET,POST,PUT,DELETE,PATCH,OPTIONS"
+CORS_ALLOWED_HEADERS = "Content-Type,Authorization,X-Requested-With"
+
+# Feature Flags
+FEATURE_AI_ENABLED = "true"
+FEATURE_ANALYTICS_ENABLED = "true"
+FEATURE_RATE_LIMITING_ENABLED = "true"
+
+# Rate Limiting
+RATE_LIMIT_REQUESTS_PER_MINUTE = "60"
+RATE_LIMIT_AI_REQUESTS_PER_MINUTE = "10"
+
+# Cache Configuration
+CACHE_TTL_DEFAULT = "3600"
+
+# ===================================
 # Staging Environment
+# ===================================
 [env.staging]
 name = "mvp-template-staging"
 route = { pattern = "staging.example.com/*", zone_name = "example.com" }
@@ -93,8 +131,124 @@ route = { pattern = "staging.example.com/*", zone_name = "example.com" }
 [env.staging.vars]
 ENVIRONMENT = "staging"
 LOG_LEVEL = "debug"
+CORS_ALLOWED_ORIGINS = "https://staging.example.com"
 
-# Observability
-[observability]
-enabled = true
-head_sampling_rate = 1.0
+# Staging-specific KV namespaces
+[[env.staging.kv_namespaces]]
+binding = "CACHE"
+id = "your-staging-kv-cache-id"
+
+[[env.staging.kv_namespaces]]
+binding = "SESSIONS"
+id = "your-staging-kv-sessions-id"
+
+# Staging-specific D1 database
+[[env.staging.d1_databases]]
+binding = "DB"
+database_name = "mvp-database-staging"
+database_id = "your-staging-d1-database-id"
+
+# Staging-specific R2 buckets
+[[env.staging.r2_buckets]]
+binding = "ASSETS"
+bucket_name = "mvp-assets-staging"
+
+[[env.staging.r2_buckets]]
+binding = "UPLOADS"
+bucket_name = "mvp-uploads-staging"
+
+# ===================================
+# Production Environment
+# ===================================
+[env.production]
+name = "mvp-template-production"
+route = { pattern = "example.com/*", zone_name = "example.com" }
+workers_dev = false
+
+[env.production.vars]
+ENVIRONMENT = "production"
+LOG_LEVEL = "warn"
+CORS_ALLOWED_ORIGINS = "https://example.com,https://www.example.com"
+FEATURE_RATE_LIMITING_ENABLED = "true"
+
+# Production-specific limits
+[env.production.limits]
+cpu_ms = 50
+
+# Production-specific KV namespaces
+[[env.production.kv_namespaces]]
+binding = "CACHE"
+id = "your-production-kv-cache-id"
+
+[[env.production.kv_namespaces]]
+binding = "SESSIONS"
+id = "your-production-kv-sessions-id"
+
+# Production-specific D1 database
+[[env.production.d1_databases]]
+binding = "DB"
+database_name = "mvp-database-production"
+database_id = "your-production-d1-database-id"
+
+# Production-specific R2 buckets
+[[env.production.r2_buckets]]
+binding = "ASSETS"
+bucket_name = "mvp-assets-production"
+
+[[env.production.r2_buckets]]
+binding = "UPLOADS"
+bucket_name = "mvp-uploads-production"
+
+# ===================================
+# Triggers & Cron (Optional)
+# ===================================
+# Run scheduled tasks
+# [triggers]
+# crons = ["0 0 * * *"]  # Run daily at midnight
+
+# ===================================
+# Site Configuration (for Pages)
+# ===================================
+# [site]
+# bucket = "./dist"
+
+# ===================================
+# Rules (Advanced)
+# ===================================
+# [[rules]]
+# type = "Text"
+# globs = ["**/*.txt"]
+# fallthrough = true
+
+# ===================================
+# Unsafe Bindings (Use with caution)
+# ===================================
+# [unsafe]
+# bindings = [
+#   { name = "MY_BINDING", type = "..." }
+# ]
+
+# ===================================
+# Tail Consumers (for logging)
+# ===================================
+# [[tail_consumers]]
+# service = "my-log-consumer"
+
+# ===================================
+# mtls_certificates (for mTLS)
+# ===================================
+# [[mtls_certificates]]
+# binding = "MY_CERT"
+# certificate_id = "..."
+
+# ===================================
+# logpush (for external logging)
+# ===================================
+# [logpush]
+# enabled = true
+
+# ===================================
+# Browser Rendering (Optional)
+# ===================================
+# [browser]
+# binding = "BROWSER"
