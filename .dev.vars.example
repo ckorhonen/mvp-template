@@ -1,0 +1,10 @@
+# Development Variables
+# Copy this to .dev.vars and fill in your actual values
+# .dev.vars is gitignored and will not be committed
+
+CLOUDFLARE_ACCOUNT_ID=your-account-id
+AI_GATEWAY_ID=your-gateway-id
+OPENAI_API_KEY=sk-your-key
+API_KEY=your-api-key
+ENVIRONMENT=development
+LOG_LEVEL=debug
