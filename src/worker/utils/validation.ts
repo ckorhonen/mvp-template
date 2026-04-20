@@ -1,46 +1,36 @@
 /**
- * Validation Utilities
- * 
- * Input validation helpers for API requests.
+ * Validation Utility Functions
+ * Input validation and sanitization helpers
  */
 
-export interface ValidationError {
-  field: string;
-  message: string;
-}
-
-export class ValidationException extends Error {
-  constructor(public errors: ValidationError[]) {
-    super('Validation failed');
-    this.name = 'ValidationException';
-  }
-}
+import { ValidationError } from '../types/api';
 
 /**
- * Validate required fields
+ * Validate required fields in an object
  */
-export function validateRequired(
-  data: Record<string, unknown>,
-  fields: string[]
+export function validateRequiredFields(
+  data: Record<string, any>,
+  requiredFields: string[]
 ): ValidationError[] {
   const errors: ValidationError[] = [];
-  
-  for (const field of fields) {
-    if (data[field] === undefined || data[field] === null || data[field] === '') {
+
+  for (const field of requiredFields) {
+    if (!data[field] || data[field] === '') {
       errors.push({
         field,
         message: `${field} is required`,
+        code: 'REQUIRED_FIELD',
       });
     }
   }
-  
+
   return errors;
 }
 
 /**
  * Validate email format
  */
-export function validateEmail(email: string): boolean {
+export function isValidEmail(email: string): boolean {
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   return emailRegex.test(email);
 }
@@ -48,49 +38,13 @@ export function validateEmail(email: string): boolean {
 /**
  * Validate URL format
  */
-export function validateUrl(url: string): boolean {
+export function isValidUrl(url: string): boolean {
   try {
     new URL(url);
     return true;
   } catch {
     return false;
   }
-}
-
-/**
- * Validate string length
- */
-export function validateLength(
-  value: string,
-  min?: number,
-  max?: number
-): boolean {
-  if (min !== undefined && value.length < min) return false;
-  if (max !== undefined && value.length > max) return false;
-  return true;
-}
-
-/**
- * Validate number range
- */
-export function validateRange(
-  value: number,
-  min?: number,
-  max?: number
-): boolean {
-  if (min !== undefined && value < min) return false;
-  if (max !== undefined && value > max) return false;
-  return true;
-}
-
-/**
- * Validate enum value
- */
-export function validateEnum<T extends string>(
-  value: string,
-  allowedValues: T[]
-): value is T {
-  return allowedValues.includes(value as T);
 }
 
 /**
@@ -101,15 +55,27 @@ export function sanitizeString(input: string): string {
 }
 
 /**
- * Parse and validate JSON from request
+ * Validate JSON string
  */
-export async function parseAndValidateJSON<T = Record<string, unknown>>(
-  request: Request
-): Promise<T> {
+export function isValidJSON(str: string): boolean {
   try {
-    const body = await request.json();
-    return body as T;
-  } catch (error) {
-    throw new Error('Invalid JSON in request body');
+    JSON.parse(str);
+    return true;
+  } catch {
+    return false;
   }
+}
+
+/**
+ * Validate number range
+ */
+export function isInRange(value: number, min: number, max: number): boolean {
+  return value >= min && value <= max;
+}
+
+/**
+ * Validate string length
+ */
+export function isValidLength(str: string, min: number, max: number): boolean {
+  return str.length >= min && str.length <= max;
 }

@@ -1,127 +1,119 @@
 /**
- * Cache Utilities
- * 
- * Helpers for working with KV cache, including TTL management and key generation.
+ * Cache Utility Functions
+ * Helper functions for KV caching
  */
 
-import type { Env } from '../types';
+import { Env, CacheOptions } from '../types/env';
 
-export interface CacheOptions {
-  ttl?: number; // Time to live in seconds
-  metadata?: Record<string, unknown>;
-}
-
-export class CacheManager {
-  constructor(private kv: KVNamespace, private keyPrefix: string = 'cache:') {}
-
-  /**
-   * Generate a cache key with prefix
-   */
-  private getKey(key: string): string {
-    return `${this.keyPrefix}${key}`;
+/**
+ * Get from cache with automatic JSON parsing
+ */
+export async function getCached<T>(
+  env: Env,
+  key: string
+): Promise<T | null> {
+  if (env.FEATURE_CACHING_ENABLED !== 'true') {
+    return null;
   }
 
-  /**
-   * Get a value from cache
-   */
-  async get<T>(key: string): Promise<T | null> {
-    const value = await this.kv.get(this.getKey(key), 'json');
-    return value as T | null;
-  }
-
-  /**
-   * Set a value in cache
-   */
-  async set(key: string, value: unknown, options: CacheOptions = {}): Promise<void> {
-    const { ttl = 3600, metadata } = options;
-    await this.kv.put(
-      this.getKey(key),
-      JSON.stringify(value),
-      {
-        expirationTtl: ttl,
-        metadata: metadata || {},
-      }
-    );
-  }
-
-  /**
-   * Delete a value from cache
-   */
-  async delete(key: string): Promise<void> {
-    await this.kv.delete(this.getKey(key));
-  }
-
-  /**
-   * Check if a key exists in cache
-   */
-  async has(key: string): Promise<boolean> {
-    const value = await this.kv.get(this.getKey(key));
-    return value !== null;
-  }
-
-  /**
-   * Get or set pattern - fetch from cache or compute and cache
-   */
-  async getOrSet<T>(
-    key: string,
-    fn: () => Promise<T>,
-    options: CacheOptions = {}
-  ): Promise<T> {
-    const cached = await this.get<T>(key);
-    if (cached !== null) {
-      return cached;
-    }
-
-    const value = await fn();
-    await this.set(key, value, options);
-    return value;
-  }
-
-  /**
-   * Invalidate cache by pattern (list and delete)
-   */
-  async invalidatePattern(pattern: string): Promise<number> {
-    const keys = await this.kv.list({ prefix: this.getKey(pattern) });
-    let deleted = 0;
-    
-    for (const key of keys.keys) {
-      await this.kv.delete(key.name);
-      deleted++;
-    }
-    
-    return deleted;
+  try {
+    const cached = await env.CACHE.get(key, 'json');
+    return cached as T | null;
+  } catch (error) {
+    console.error('Cache get error:', error);
+    return null;
   }
 }
 
 /**
- * Create a cache manager from environment
+ * Set cache with automatic JSON serialization
  */
-export function createCacheManager(env: Env): CacheManager {
-  return new CacheManager(env.CACHE);
+export async function setCache<T>(
+  env: Env,
+  key: string,
+  value: T,
+  options?: CacheOptions
+): Promise<void> {
+  if (env.FEATURE_CACHING_ENABLED !== 'true') {
+    return;
+  }
+
+  try {
+    const serialized = JSON.stringify(value);
+    await env.CACHE.put(key, serialized, {
+      expirationTtl: options?.ttl || 3600,
+    });
+  } catch (error) {
+    console.error('Cache set error:', error);
+  }
 }
 
 /**
- * Generate a cache key from request
+ * Delete from cache
  */
-export function getCacheKeyFromRequest(request: Request): string {
+export async function deleteCache(
+  env: Env,
+  key: string
+): Promise<void> {
+  try {
+    await env.CACHE.delete(key);
+  } catch (error) {
+    console.error('Cache delete error:', error);
+  }
+}
+
+/**
+ * Cache wrapper for functions
+ */
+export async function withCache<T>(
+  env: Env,
+  key: string,
+  fn: () => Promise<T>,
+  options?: CacheOptions
+): Promise<T> {
+  // Try to get from cache first
+  const cached = await getCached<T>(env, key);
+  if (cached !== null) {
+    return cached;
+  }
+
+  // Execute function
+  const result = await fn();
+
+  // Cache the result
+  await setCache(env, key, result, options);
+
+  return result;
+}
+
+/**
+ * Generate cache key from request
+ */
+export function generateCacheKey(request: Request, prefix: string = ''): string {
   const url = new URL(request.url);
-  const method = request.method;
-  const path = url.pathname + url.search;
-  return `req:${method}:${path}`;
+  return `${prefix}${url.pathname}${url.search}`;
 }
 
 /**
- * Check if response is cacheable
+ * Invalidate cache by pattern
  */
-export function isCacheable(response: Response): boolean {
-  // Only cache successful GET requests
-  if (response.status !== 200) return false;
-  
-  // Check cache-control header
-  const cacheControl = response.headers.get('cache-control');
-  if (cacheControl?.includes('no-cache') || cacheControl?.includes('no-store')) {
-    return false;
-  }
-  
-  return true;
+export async function invalidateCachePattern(
+  env: Env,
+  pattern: string
+): Promise<number> {
+  let deletedCount = 0;
+  let cursor: string | undefined;
+
+  do {
+    const result = await env.CACHE.list({ prefix: pattern, cursor });
+    
+    for (const key of result.keys) {
+      await env.CACHE.delete(key.name);
+      deletedCount++;
+    }
+
+    cursor = result.cursor;
+  } while (cursor);
+
+  return deletedCount;
 }

@@ -1,247 +1,207 @@
 /**
- * Database Routes
- * Handles all database-related API endpoints
+ * D1 Database Route Handlers
+ * CRUD operations for D1 database
  */
 
-import type { Env } from '../types';
-import { createD1Service } from '../services/d1-database';
-import { jsonResponse, errorResponse } from '../utils/response';
+import { Env, DatabaseRecord } from '../types/env';
+import { jsonResponse, errorResponse, createdResponse, noContentResponse } from '../utils/response';
+import { ValidationError, NotFoundError } from '../middleware/errorHandler';
+import { Logger } from '../utils/logger';
 
 /**
- * POST /api/users
- * Create a new user
+ * Query records from a table
  */
-export async function createUser(
-  request: Request,
-  env: Env
-): Promise<Response> {
-  try {
-    const body = await request.json() as {
-      email: string;
-      name: string;
-      metadata?: Record<string, unknown>;
-    };
-
-    if (!body.email || !body.name) {
-      return errorResponse('Email and name are required', 400);
-    }
-
-    const db = createD1Service(env);
-
-    // Check if user exists
-    const existing = await db.queryOne(
-      'SELECT id FROM users WHERE email = ?',
-      [body.email]
-    );
-
-    if (existing) {
-      return errorResponse('User already exists', 409);
-    }
-
-    const userId = await db.insert('users', {
-      email: body.email,
-      name: body.name,
-      metadata: JSON.stringify(body.metadata || {}),
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    });
-
-    const user = await db.queryOne('SELECT * FROM users WHERE id = ?', [
-      userId,
-    ]);
-
-    return jsonResponse(
-      {
-        success: true,
-        data: user,
-      },
-      201
-    );
-  } catch (error) {
-    console.error('Create user error:', error);
-    return errorResponse(
-      error instanceof Error ? error.message : 'Failed to create user',
-      500
-    );
-  }
-}
-
-/**
- * GET /api/users/:id
- * Get a user by ID
- */
-export async function getUser(
+export async function handleDatabaseQuery(
   request: Request,
   env: Env,
-  userId: string
+  params: Record<string, string>
 ): Promise<Response> {
-  try {
-    const db = createD1Service(env);
-    const user = await db.queryOne('SELECT * FROM users WHERE id = ?', [
-      userId,
-    ]);
+  const logger = new Logger(env);
+  const { table } = params;
 
-    if (!user) {
-      return errorResponse('User not found', 404);
-    }
-
-    return jsonResponse({
-      success: true,
-      data: user,
-    });
-  } catch (error) {
-    console.error('Get user error:', error);
-    return errorResponse(
-      error instanceof Error ? error.message : 'Failed to get user',
-      500
-    );
-  }
-}
-
-/**
- * GET /api/users
- * List users with pagination
- */
-export async function listUsers(
-  request: Request,
-  env: Env
-): Promise<Response> {
   try {
     const url = new URL(request.url);
-    const page = parseInt(url.searchParams.get('page') || '1', 10);
-    const perPage = parseInt(url.searchParams.get('per_page') || '10', 10);
-    const offset = (page - 1) * perPage;
+    const limit = parseInt(url.searchParams.get('limit') || '100', 10);
+    const offset = parseInt(url.searchParams.get('offset') || '0', 10);
 
-    const db = createD1Service(env);
+    logger.info('Database query', { table, limit, offset });
 
-    const users = await db.select('users', {
-      orderBy: { column: 'created_at', direction: 'DESC' },
-      limit: perPage,
-      offset,
-    });
+    // Query the database
+    const query = `SELECT * FROM ${table} ORDER BY id DESC LIMIT ? OFFSET ?`;
+    const result = await env.DB.prepare(query).bind(limit, offset).all();
 
-    const total = await db.count('users');
+    // Get total count
+    const countResult = await env.DB.prepare(`SELECT COUNT(*) as count FROM ${table}`).first();
+    const total = (countResult as any)?.count || 0;
 
     return jsonResponse({
-      success: true,
-      data: {
-        users,
-        pagination: {
-          page,
-          per_page: perPage,
-          total,
-          total_pages: Math.ceil(total / perPage),
-        },
+      records: result.results,
+      pagination: {
+        limit,
+        offset,
+        total,
+        hasMore: offset + limit < total,
       },
     });
   } catch (error) {
-    console.error('List users error:', error);
-    return errorResponse(
-      error instanceof Error ? error.message : 'Failed to list users',
-      500
-    );
+    logger.error('Database query error', error);
+    return errorResponse('Failed to query database', 500, 'DATABASE_ERROR', {
+      table,
+      error: (error as Error).message,
+    });
   }
 }
 
 /**
- * PUT /api/users/:id
- * Update a user
+ * Create a new record in a table
  */
-export async function updateUser(
+export async function handleDatabaseCreate(
   request: Request,
   env: Env,
-  userId: string
+  params: Record<string, string>
 ): Promise<Response> {
+  const logger = new Logger(env);
+  const { table } = params;
+
   try {
-    const body = await request.json() as {
-      name?: string;
-      metadata?: Record<string, unknown>;
-    };
+    const body = await request.json() as DatabaseRecord;
 
-    if (!body.name && !body.metadata) {
-      return errorResponse('No update data provided', 400);
+    if (!body || Object.keys(body).length === 0) {
+      throw new ValidationError('Request body cannot be empty');
     }
 
-    const db = createD1Service(env);
+    logger.info('Database create', { table, data: body });
 
-    // Check if user exists
-    const existing = await db.queryOne('SELECT id FROM users WHERE id = ?', [
-      userId,
-    ]);
+    // Build INSERT query
+    const columns = Object.keys(body).join(', ');
+    const placeholders = Object.keys(body).map(() => '?').join(', ');
+    const values = Object.values(body);
 
-    if (!existing) {
-      return errorResponse('User not found', 404);
+    const query = `INSERT INTO ${table} (${columns}) VALUES (${placeholders}) RETURNING *`;
+    const result = await env.DB.prepare(query).bind(...values).first();
+
+    if (!result) {
+      throw new Error('Failed to create record');
     }
 
-    const updateData: Record<string, string> = {
-      updated_at: new Date().toISOString(),
-    };
-
-    if (body.name) {
-      updateData.name = body.name;
+    // Track analytics if enabled
+    if (env.FEATURE_ANALYTICS_ENABLED === 'true' && env.ANALYTICS) {
+      env.ANALYTICS.writeDataPoint({
+        blobs: ['database-create'],
+        indexes: [table],
+      });
     }
 
-    if (body.metadata) {
-      updateData.metadata = JSON.stringify(body.metadata);
-    }
-
-    await db.update('users', updateData, {
-      column: 'id',
-      value: userId,
-    });
-
-    const user = await db.queryOne('SELECT * FROM users WHERE id = ?', [
-      userId,
-    ]);
-
-    return jsonResponse({
-      success: true,
-      data: user,
-    });
+    return createdResponse(result, 'Record created successfully');
   } catch (error) {
-    console.error('Update user error:', error);
-    return errorResponse(
-      error instanceof Error ? error.message : 'Failed to update user',
-      500
-    );
+    logger.error('Database create error', error);
+    if (error instanceof ValidationError) {
+      return errorResponse(error.message, error.statusCode, error.code, error.details);
+    }
+    return errorResponse('Failed to create record', 500, 'DATABASE_ERROR', {
+      table,
+      error: (error as Error).message,
+    });
   }
 }
 
 /**
- * DELETE /api/users/:id
- * Delete a user
+ * Update a record in a table
  */
-export async function deleteUser(
+export async function handleDatabaseUpdate(
   request: Request,
   env: Env,
-  userId: string
+  params: Record<string, string>
 ): Promise<Response> {
+  const logger = new Logger(env);
+  const { table, id } = params;
+
   try {
-    const db = createD1Service(env);
+    const body = await request.json() as DatabaseRecord;
 
-    // Check if user exists
-    const existing = await db.queryOne('SELECT id FROM users WHERE id = ?', [
-      userId,
-    ]);
-
-    if (!existing) {
-      return errorResponse('User not found', 404);
+    if (!body || Object.keys(body).length === 0) {
+      throw new ValidationError('Request body cannot be empty');
     }
 
-    await db.delete('users', {
-      column: 'id',
-      value: userId,
-    });
+    logger.info('Database update', { table, id, data: body });
 
-    return jsonResponse({
-      success: true,
-      message: 'User deleted successfully',
-    });
+    // Build UPDATE query
+    const updates = Object.keys(body).map((key) => `${key} = ?`).join(', ');
+    const values = [...Object.values(body), id];
+
+    const query = `UPDATE ${table} SET ${updates}, updated_at = CURRENT_TIMESTAMP WHERE id = ? RETURNING *`;
+    const result = await env.DB.prepare(query).bind(...values).first();
+
+    if (!result) {
+      throw new NotFoundError(`Record with id ${id} not found`);
+    }
+
+    // Track analytics if enabled
+    if (env.FEATURE_ANALYTICS_ENABLED === 'true' && env.ANALYTICS) {
+      env.ANALYTICS.writeDataPoint({
+        blobs: ['database-update'],
+        indexes: [table],
+      });
+    }
+
+    return jsonResponse(result, 'Record updated successfully');
   } catch (error) {
-    console.error('Delete user error:', error);
-    return errorResponse(
-      error instanceof Error ? error.message : 'Failed to delete user',
-      500
-    );
+    logger.error('Database update error', error);
+    if (error instanceof ValidationError || error instanceof NotFoundError) {
+      return errorResponse(error.message, error.statusCode, error.code, error.details);
+    }
+    return errorResponse('Failed to update record', 500, 'DATABASE_ERROR', {
+      table,
+      id,
+      error: (error as Error).message,
+    });
+  }
+}
+
+/**
+ * Delete a record from a table
+ */
+export async function handleDatabaseDelete(
+  request: Request,
+  env: Env,
+  params: Record<string, string>
+): Promise<Response> {
+  const logger = new Logger(env);
+  const { table, id } = params;
+
+  try {
+    logger.info('Database delete', { table, id });
+
+    // Check if record exists
+    const existingRecord = await env.DB.prepare(`SELECT id FROM ${table} WHERE id = ?`)
+      .bind(id)
+      .first();
+
+    if (!existingRecord) {
+      throw new NotFoundError(`Record with id ${id} not found`);
+    }
+
+    // Delete the record
+    await env.DB.prepare(`DELETE FROM ${table} WHERE id = ?`).bind(id).run();
+
+    // Track analytics if enabled
+    if (env.FEATURE_ANALYTICS_ENABLED === 'true' && env.ANALYTICS) {
+      env.ANALYTICS.writeDataPoint({
+        blobs: ['database-delete'],
+        indexes: [table],
+      });
+    }
+
+    return noContentResponse();
+  } catch (error) {
+    logger.error('Database delete error', error);
+    if (error instanceof NotFoundError) {
+      return errorResponse(error.message, error.statusCode, error.code);
+    }
+    return errorResponse('Failed to delete record', 500, 'DATABASE_ERROR', {
+      table,
+      id,
+      error: (error as Error).message,
+    });
   }
 }
